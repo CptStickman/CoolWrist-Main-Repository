@@ -8,10 +8,10 @@ int deterministicAlgorithm(DataEntry entry, bool episodeState, int episodeCount,
         bool skinCondValid = skinCondCheckNE(entry.skinCond, normalStats.skinCond);
         bool heartRateValid = heartRateCheckNE(entry.heartRate, normalStats.heartRate);
         if(tempValid && skinCondValid && heartRateValid){
-            printf("All parameters are within normal ranges.\n");
+            printf("All parameters are leaning towards an episode.\n");
             episodeCount++;
         } else {
-            printf("One or more parameters are out of range!\n");
+            printf("Some aren't suggesting an episode\n");
             if(episodeCount > 0){
                 episodeCount--;
             }
@@ -49,41 +49,41 @@ int deterministicAlgorithm(DataEntry entry, bool episodeState, int episodeCount,
     return episodeCount; // Return the updated episode count
 }
 
-//The three checks for the parameters when there's currently no episode.
-bool tempCheckNE(int temp, int normalTemp){
-    if(temp <= 38){
+//The three checks to determine if an episode is starting.
+bool tempCheckNE(float temp, float normalTemp){
+    if(temp <= normalTemp - normalTemp * 0.2){
         return true;
     }
     return false;
 }
 bool skinCondCheckNE(float skinCond, float normalSkinCond){
-    if(skinCond >= 0.7){
+    if(skinCond >= normalSkinCond + normalSkinCond * 0.2){
         return true;
     }
     return false;
 }
 bool heartRateCheckNE(float heartRate, float normalHeartRate){
-    if(heartRate >= 100){
+    if(heartRate >= normalHeartRate + normalHeartRate * 0.2){
         return true;
     }
     return false;
 }
 
-//The three checks for the parameters when there's currently an episode.
-bool tempCheckE(int temp, int normalTemp){
-    if(temp >= 38){
+//The three checks to determine if an episode is ending.
+bool tempCheckE(float temp, float normalTemp){
+    if(temp >= normalTemp - normalTemp * 0.2){
         return true;
     }
     return false;
 }
 bool skinCondCheckE(float skinCond, float normalSkinCond){
-    if(skinCond < 0.7){
+    if(skinCond < normalSkinCond + normalSkinCond * 0.2){
         return true;
     }
     return false;
 }
 bool heartRateCheckE(float heartRate, float normalHeartRate){
-    if(heartRate < 100){
+    if(heartRate < normalHeartRate - normalHeartRate * 0.2){
         return true;
     }
     return false;
