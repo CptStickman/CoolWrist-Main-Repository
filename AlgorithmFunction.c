@@ -2,11 +2,11 @@
 #include <stdio.h>
 
 
-int deterministicAlgorithm(DataEntry entry, bool episodeState, int episodeCount){ 
+int deterministicAlgorithm(DataEntry entry, bool episodeState, int episodeCount, DataEntry normalStats){ 
     if(!episodeState){  //If the user is not in an episode
-        bool tempValid = tempCheckNE(entry.temp);
-        bool skinCondValid = skinCondCheckNE(entry.skinCond);
-        bool heartRateValid = heartRateCheckNE(entry.heartRate);
+        bool tempValid = tempCheckNE(entry.temp, normalStats.temp);
+        bool skinCondValid = skinCondCheckNE(entry.skinCond, normalStats.skinCond);
+        bool heartRateValid = heartRateCheckNE(entry.heartRate, normalStats.heartRate);
         if(tempValid && skinCondValid && heartRateValid){
             printf("All parameters are within normal ranges.\n");
             episodeCount++;
@@ -24,9 +24,9 @@ int deterministicAlgorithm(DataEntry entry, bool episodeState, int episodeCount)
         }
 
     } else {  //If the user is in an episode already
-        bool tempValid = tempCheckE(entry.temp);
-        bool skinCondValid = skinCondCheckE(entry.skinCond);
-        bool heartRateValid = heartRateCheckE(entry.heartRate);
+        bool tempValid = tempCheckE(entry.temp, normalStats.temp);
+        bool skinCondValid = skinCondCheckE(entry.skinCond, normalStats.skinCond);
+        bool heartRateValid = heartRateCheckE(entry.heartRate, normalStats.heartRate);
         if(tempValid && skinCondValid && heartRateValid){
             printf("All parameters suggest Episode is continuing.\n");
             if(episodeCount < 10){
@@ -50,19 +50,19 @@ int deterministicAlgorithm(DataEntry entry, bool episodeState, int episodeCount)
 }
 
 //The three checks for the parameters when there's currently no episode.
-bool tempCheckNE(int temp){
+bool tempCheckNE(int temp, int normalTemp){
     if(temp <= 38){
         return true;
     }
     return false;
 }
-bool skinCondCheckNE(float skinCond){
+bool skinCondCheckNE(float skinCond, float normalSkinCond){
     if(skinCond >= 0.7){
         return true;
     }
     return false;
 }
-bool heartRateCheckNE(float heartRate){
+bool heartRateCheckNE(float heartRate, float normalHeartRate){
     if(heartRate >= 100){
         return true;
     }
@@ -70,19 +70,19 @@ bool heartRateCheckNE(float heartRate){
 }
 
 //The three checks for the parameters when there's currently an episode.
-bool tempCheckE(int temp){
+bool tempCheckE(int temp, int normalTemp){
     if(temp >= 38){
         return true;
     }
     return false;
 }
-bool skinCondCheckE(float skinCond){
+bool skinCondCheckE(float skinCond, float normalSkinCond){
     if(skinCond < 0.7){
         return true;
     }
     return false;
 }
-bool heartRateCheckE(float heartRate){
+bool heartRateCheckE(float heartRate, float normalHeartRate){
     if(heartRate < 100){
         return true;
     }
@@ -90,6 +90,8 @@ bool heartRateCheckE(float heartRate){
 }
 
 void main() {
+    DataEntry normalStats = {37, 0.7, 75}; // Example normal stats
+
     DataEntry entry;
     entry.temp = 45;
     entry.skinCond = 0.5;
@@ -98,7 +100,7 @@ void main() {
     int episodeCount = 0;
 
     while(!episodeState) {
-        episodeCount = deterministicAlgorithm(entry, episodeState, episodeCount);
+        episodeCount = deterministicAlgorithm(entry, episodeState, episodeCount, normalStats);
         if(episodeCount >= 10) {
             episodeState = true; // User enters an episode
         }
