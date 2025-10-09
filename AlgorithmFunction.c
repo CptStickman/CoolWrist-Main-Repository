@@ -1,7 +1,6 @@
 #include "algorithmFunction.h"
 #include <stdio.h>
 
-
 int deterministicAlgorithm(DataEntry entry, bool episodeState, int episodeCount, DataEntry normalStats){ 
     if(!episodeState){  //If the user is not in an episode
         bool tempValid = tempCheckNE(entry.temp, normalStats.temp);
