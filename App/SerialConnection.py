@@ -9,7 +9,7 @@ SAVE_FILE = "TestFileDownload.txt"
 
 # STM32 VID/PID - Basic example values
 STM32_VID = 0x0483  # STMicroelectronics VID
-STM32_PID = 0x5740  # STM32 Virtual COM Port PID
+STM32_PID = 0x0374  # STM32 Virtual COM Port PID
 
 def find_uart_device(vid = None, pid = None):
     ports = serial.tools.list_ports.comports()
