@@ -7,8 +7,8 @@ def plot_Data():
     """Create an overview plot of health data"""
     try:
         # Load the data
-        data = pd.read_csv("DataFolder/health_data.txt", sep=' ', header=None, 
-                          names=['Time', 'Temperature', 'Heart_Rate', 'Skin_Conductivity'])
+        data = pd.read_csv("App/DataFolder/health_data.txt", sep=' ', header=None, 
+                          names=['Time', 'Temperature', 'Heart_Rate', 'Skin_Conductivity', 'Episode'])
         
         # Create a simple plot
         fig, axes = plt.subplots(3, 1, figsize=(12, 8))
@@ -24,7 +24,7 @@ def plot_Data():
         axes[1].grid(True, alpha=0.3)
         
         axes[2].plot(data['Skin_Conductivity'], color='green', linewidth=0.8)
-        axes[2].set_title('Skin Conductivity')
+        axes[2].set_title('Skin Conductivity (mV)')
         axes[2].set_xlabel('Time (seconds)')
         axes[2].grid(True, alpha=0.3)
         

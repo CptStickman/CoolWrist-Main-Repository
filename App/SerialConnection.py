@@ -1,6 +1,7 @@
 import serial
 import serial.tools.list_ports
 import os
+import time  # Added for stream capture timing
 
 BAUDRATE = 115200
 REQUEST_COMMAND = b"GET_FILE\n"
@@ -9,9 +10,9 @@ SAVE_FILE = "TestFileDownload.txt"
 
 # STM32 VID/PID - Basic example values
 STM32_VID = 0x0483  # STMicroelectronics VID
-STM32_PID = 0x0374  # STM32 Virtual COM Port PID
+STM32_PID = 0x374E  # STM32 Virtual COM Port PID
 
-def find_uart_device(vid = None, pid = None):
+def find_uart_device(vid, pid):
     ports = serial.tools.list_ports.comports()
     for port in ports:
         if vid and pid:
@@ -35,6 +36,45 @@ def list_all_serial_devices():
         print("---")
 
 def download_file_from_device(port):
+    """Capture streaming data from device and save to file"""
+    os.makedirs(SAVE_DIR, exist_ok=True)
+    save_path = os.path.join(SAVE_DIR, SAVE_FILE)
+    try:
+        with serial.Serial(port, BAUDRATE, timeout=2) as ser:  # Reduced timeout for stream capture
+            # Clear any existing data in buffer first
+            ser.reset_input_buffer()
+            
+            # Send the GET_FILE command first
+            ser.write(REQUEST_COMMAND)
+            print("GET_FILE command sent. Listening for response...")
+            
+            stream_data = []
+            start_time = time.time()
+            capture_duration = 10  # Capture for 10 seconds
+            
+            while time.time() - start_time < capture_duration:
+                data = ser.read(1024)
+                if data:
+                    stream_data.append(data)
+                    print(f"Received {len(data)} bytes...")
+                else:
+                    print("No data received in timeout period")
+            
+            # Save all captured stream data
+            with open(save_path, "wb") as f:
+                for chunk in stream_data:
+                    f.write(chunk)
+        
+        print(f"Stream data captured successfully to {save_path}")
+        print(f"Captured {len(stream_data)} data chunks over {capture_duration} seconds")
+        return save_path
+    except Exception as e:
+        print(f"Error: {e}")
+        return None
+
+# Original file-based download function (commented out for later use)
+"""
+def download_file_from_device_original(port):
     os.makedirs(SAVE_DIR, exist_ok=True)
     save_path = os.path.join(SAVE_DIR, SAVE_FILE)
     try:
@@ -52,3 +92,4 @@ def download_file_from_device(port):
     except Exception as e:
         print(f"Error: {e}")
         return None
+"""
