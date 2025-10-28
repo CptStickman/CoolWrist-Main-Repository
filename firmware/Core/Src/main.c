@@ -31,6 +31,8 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdio.h>
+// #include "fx_api.h"
+// #include "fx_stm32_sd_driver.h"
 
 /* USER CODE END Includes */
 
@@ -67,6 +69,15 @@ COM_InitTypeDef BspCOMInit;
 __IO uint32_t BspButtonState = BUTTON_RELEASED;
 
 /* USER CODE BEGIN PV */
+
+
+// ============ FileX File System ============
+// static FX_MEDIA sd_disk;
+// static FX_FILE data_file;
+// static CHAR media_memory[512];
+// static CHAR filename_buffer[64];
+// static UINT file_system_ready = 0;
+// static UINT file_open = 0;
 
 // ---- EDA acquisition (ADC @ 200 Hz) ----
 
@@ -108,6 +119,19 @@ static uint32_t seconds_counter = 0;
 void SystemClock_Config(void);
 static void SystemPower_Config(void);
 /* USER CODE BEGIN PFP */
+
+// ---- FileX helpers ----
+// static UINT FS_Init(void);
+// static UINT FS_CreateDataFile(void);
+// static UINT FS_WriteDataToFile(const char* data);
+// static UINT FS_CloseDataFile(void);
+
+// // Modified print functions for FileX
+// static void Print_EDA_Window_ToFile(const EDA_1s_t *w);
+// static void Print_TEMP_Window_ToFile(const TEMP_1s_t *w);
+// static void Predict_ToFile(const Window1s_t *win);
+
+
 // ---- EDA helpers ----
 static void EDA_Start(void);
 static void ADC1_DoCalibration(void);
