@@ -97,12 +97,12 @@ def create_file_selection_interface(root, back_callback):
     # Buttons
     plot_btn = tk.Button(button_frame, text="Plot Graph", command=plot_selected_file,
                         bg="#3498DB", fg="white", font=("Arial", 10, "bold"),
-                        padx=20, pady=8)
+                        padx=20, pady=8, width=15)
     plot_btn.pack(side=tk.TOP, pady=10)
     
     back_btn = tk.Button(button_frame, text="← Back to Main Menu", command=back_callback,
                         bg="#E74C3C", fg="white", font=("Arial", 10, "bold"),
-                        padx=20, pady=8)
+                        padx=20, pady=8, width=15)
     back_btn.pack(side=tk.TOP, pady=5)
     
     return [title_label, dropdown, button_frame], selected_file

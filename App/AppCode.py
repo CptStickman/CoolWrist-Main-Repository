@@ -32,7 +32,7 @@ def main():
     root.title("CoolWrist App")
     root.geometry("300x400")  # Width x Height
     root.configure(bg="#054067")  # Dark blue-gray background
-
+   
     # Store references to widgets and their pack configurations
     main_widgets = []
     selection_widgets = []
@@ -77,20 +77,20 @@ def main():
     # main_widgets.append((read_button, {'pady': 5}))
 
     download_btn = tk.Button(root, text="Download File", command=handle_download,
-                            bg="#27AE60", fg="white", font=("Arial", 10, "bold"),
-                            padx=20, pady=8)
+                            bg="#3498DB", fg="white", font=("Arial", 10, "bold"),
+                            padx=20, pady=8, width=15)
     download_btn.pack(pady=5)
     main_widgets.append((download_btn, {'pady': 5}))
 
     graph_btn = tk.Button(root, text="Show Graph", command=show_graph_selection,
                          bg="#3498DB", fg="white", font=("Arial", 10, "bold"),
-                         padx=20, pady=8)
+                         padx=20, pady=8, width=15)
     graph_btn.pack(pady=5)
     main_widgets.append((graph_btn, {'pady': 5}))
 
     exit_btn = tk.Button(root, text="Exit", command=root.destroy,
                         bg="#E74C3C", fg="white", font=("Arial", 10, "bold"),
-                        padx=20, pady=8)
+                        padx=20, pady=8, width=15)
     exit_btn.pack(pady=5)
     main_widgets.append((exit_btn, {'pady': 5}))
 

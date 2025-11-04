@@ -25,6 +25,7 @@
 #include "spi.h"
 #include "tim.h"
 #include "gpio.h"
+#include "algorithmFunction.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -40,7 +41,8 @@
 /* USER CODE BEGIN PTD */
 typedef enum {
   APP_MONITOR = 0,
-  APP_PRINT   = 1
+  APP_PRINT   = 1,
+  APP_CALIBRATION = 2
 } AppState;
 
 /* USER CODE END PTD */
@@ -158,7 +160,7 @@ static void PWM1_SetDuty(float duty_percent);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+DataEntry userCalibratedData;
 /* USER CODE END 0 */
 
 /**
@@ -295,6 +297,43 @@ int main(void)
         seconds_counter++;
         app_state = APP_MONITOR;
       } break;
+
+      //Initial calibration state, check the readings over a period of time to set normal values.
+      case APP_CALIBRATION:
+      {
+        int calIndx = 0;
+        float skinCond[10];
+        float temp[10];
+        int heartRate[10];
+
+        while(calIndx < 10) {
+          if(one_sec_tick) {
+            Window1s_t win;
+            BuildWindow_1s(&win);
+
+            one_sec_tick = 0;
+            skinCond[calIndx] = win.eda.n;
+            temp[calIndx] = win.temp.n;
+            heartRate[calIndx] = 75; //Placeholder value until HR sensor is integrated.
+            calIndx++;
+          }
+        }
+
+        //Calculate averages
+        float skinCondSum = 0;
+        float tempSum = 0;
+        int heartRateSum = 0;
+        for(int i = 0; i < 10; i++) {
+          skinCondSum += skinCond[i];
+          tempSum += temp[i];
+          heartRateSum += heartRate[i];
+        }
+        userCalibratedData.skinCond = skinCondSum / 10;
+        userCalibratedData.temp = tempSum / 10;
+        userCalibratedData.heartRate = heartRateSum / 10;
+        app_state = APP_MONITOR;
+        break;
+      }
 
       default: app_state = APP_MONITOR; break;
     }
