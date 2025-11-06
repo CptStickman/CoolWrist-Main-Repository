@@ -6,6 +6,49 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import os
 import glob
+import re
+
+def is_valid_health_data_file(filepath):
+    """
+    Check if a file has the correct health data format.
+    Expected format: Time Temperature Heart_Rate Skin_Conductivity Episode
+    Example: 00:00:00 28.91 76.0 1103.56 Normal
+    """
+    try:
+        with open(filepath, 'r') as file:
+            first_line = file.readline().strip()
+            
+        # Check if the line is empty
+        if not first_line:
+            return False
+            
+        # Split the line into components
+        parts = first_line.split()
+        
+        # Should have exactly 5 parts: Time, Temperature, Heart_Rate, Skin_Conductivity, Episode
+        if len(parts) != 5:
+            return False
+            
+        # Check if first part matches time format (HH:MM:SS)
+        time_pattern = r'^\d{2}:\d{2}:\d{2}$'
+        if not re.match(time_pattern, parts[0]):
+            return False
+            
+        # Check if second and third parts are valid numbers (temperature and heart rate)
+        try:
+            float(parts[1])  # Temperature
+            float(parts[2])  # Heart Rate
+            float(parts[3])  # Skin Conductivity
+        except ValueError:
+            return False
+            
+        # Fifth part should be episode status (typically "Normal" or similar text)
+        # We don't need to validate the exact value, just that it exists
+        
+        return True
+        
+    except Exception:
+        return False
 
 def plot_specific_file(filename):
     """Create an overview plot of health data from a specific file"""
@@ -22,15 +65,18 @@ def plot_specific_file(filename):
         # Plot each metric
         axes[0].plot(data['Temperature'], color='red', linewidth=0.8)
         axes[0].set_title('Temperature (°C)')
+        axes[0].set_xlim(0, len(data) - 1)
         axes[0].grid(True, alpha=0.3)
         
         axes[1].plot(data['Heart_Rate'], color='blue', linewidth=0.8)
         axes[1].set_title('Heart Rate (BPM)')
+        axes[1].set_xlim(0, len(data) - 1)
         axes[1].grid(True, alpha=0.3)
         
         axes[2].plot(data['Skin_Conductivity'], color='green', linewidth=0.8)
         axes[2].set_title('Skin Conductivity (mV)')
         axes[2].set_xlabel('Time (seconds)')
+        axes[2].set_xlim(0, len(data) - 1)
         axes[2].grid(True, alpha=0.3)
         
         plt.tight_layout()
@@ -42,7 +88,7 @@ def plot_specific_file(filename):
         messagebox.showerror("Error", f"Error plotting {filename}: {e}")
 
 def get_available_data_files():
-    """Get list of available data files in DataFolder"""
+    """Get list of available valid health data files in DataFolder"""
     data_folder = "DataFolder"
     if not os.path.exists(data_folder):
         return []
@@ -54,16 +100,23 @@ def get_available_data_files():
     for pattern in file_patterns:
         files.extend(glob.glob(os.path.join(data_folder, pattern)))
     
-    # Return just the filenames, not full paths
-    return [os.path.basename(f) for f in files]
+    # Filter files to only include valid health data files
+    valid_files = []
+    for filepath in files:
+        if is_valid_health_data_file(filepath):
+            valid_files.append(os.path.basename(filepath))
+    
+    return valid_files
 
 def plot_Data():
-    """Backward compatibility function - plots the first available file"""
+    """Backward compatibility function - plots the first available valid file"""
     available_files = get_available_data_files()
     if available_files:
         plot_specific_file(available_files[0])
     else:
-        messagebox.showerror("Error", "No data files found in DataFolder!")
+        messagebox.showerror("Error", "No valid health data files found in DataFolder!\n\n" +
+                           "Files must have the format:\nTime Temperature Heart_Rate Skin_Conductivity Episode\n" +
+                           "Example: 00:00:00 28.91 76.0 1103.56 Normal")
 
 def create_file_selection_interface(root, back_callback):
     """Create the file selection interface in the provided root window"""
@@ -71,7 +124,9 @@ def create_file_selection_interface(root, back_callback):
     available_files = get_available_data_files()
     
     if not available_files:
-        messagebox.showerror("Error", "No data files found in DataFolder!")
+        messagebox.showerror("Error", "No valid health data files found in DataFolder!\n\n" +
+                           "Files must have the format:\nTime Temperature Heart_Rate Skin_Conductivity Episode\n" +
+                           "Example: 00:00:00 28.91 76.0 1103.56 Normal")
         back_callback()
         return None, None
     
