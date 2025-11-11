@@ -1,21 +1,32 @@
 import tkinter as tk
 from tkinter import messagebox
-from SerialConnection import download_file_from_device, find_uart_device
+from SerialConnection import download_file_from_device, download_linked_list_from_device, find_uart_device, test_device_connection
 
 import PlotData
 
 DataFolder = "DataFolder/TestFile.txt"
 
 def handle_download():
+    """Download linked list data from device and save as health data format"""
     port = find_uart_device(vid=0x0483, pid=0x374E)  # Use STM32 VID/PID
     if not port:
         messagebox.showerror("Error", "No STM32 device found with specified VID/PID.")
         return
-    path = download_file_from_device(port)
+    
+    messagebox.showinfo("Info", "Starting data download. This may take a moment...")
+    path = download_linked_list_from_device(port)
     if path:
-        messagebox.showinfo("Success", f"File downloaded to {path}")
+        messagebox.showinfo("Success", f"Health data downloaded and converted to {path}")
     else:
-        messagebox.showerror("Error", "Failed to download file.")
+        messagebox.showerror("Error", "Failed to download health data.")
+
+def handle_test_connection():
+    """Test the device connection"""
+    success = test_device_connection()
+    if success:
+        messagebox.showinfo("Connection Test", "Device connection test successful! Check console for details.")
+    else:
+        messagebox.showerror("Connection Test", "Device connection test failed! Check console for details.")
 
 def read_from_file():
     try:
@@ -76,11 +87,17 @@ def main():
     # read_button.pack(pady=5)
     # main_widgets.append((read_button, {'pady': 5}))
 
-    download_btn = tk.Button(root, text="Download File", command=handle_download,
+    download_btn = tk.Button(root, text="Download Health Data", command=handle_download,
                             bg="#3498DB", fg="white", font=("Arial", 10, "bold"),
                             padx=20, pady=8, width=15)
     download_btn.pack(pady=5)
     main_widgets.append((download_btn, {'pady': 5}))
+
+    test_conn_btn = tk.Button(root, text="Test Connection", command=handle_test_connection,
+                             bg="#F39C12", fg="white", font=("Arial", 10, "bold"),
+                             padx=20, pady=8, width=15)
+    test_conn_btn.pack(pady=5)
+    main_widgets.append((test_conn_btn, {'pady': 5}))
 
     graph_btn = tk.Button(root, text="Show Graph", command=show_graph_selection,
                          bg="#3498DB", fg="white", font=("Arial", 10, "bold"),

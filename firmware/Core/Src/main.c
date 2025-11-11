@@ -32,6 +32,8 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+//#include "usart.h"
 // #include "fx_api.h"
 // #include "fx_stm32_sd_driver.h"
 
@@ -57,6 +59,15 @@ typedef enum {
 // ---- TEMP (MAX31865) ----
 #define TEMP_RING_N   64u            // gotta check with the sensor
 
+// ---- Data Management ----
+#define MAX_DATA_HOURS           10u      // Maximum hours of data to keep
+#define CLEANUP_INTERVAL_MIN     30u      // Clean up every 30 minutes  
+#define NODES_TO_REMOVE_MIN      30u      // Remove 30 minutes of data each cleanup
+#define SECONDS_PER_HOUR         3600u
+#define SECONDS_PER_MINUTE       60u
+#define MAX_NODES               (MAX_DATA_HOURS * SECONDS_PER_HOUR)
+#define CLEANUP_INTERVAL_SEC    (CLEANUP_INTERVAL_MIN * SECONDS_PER_MINUTE)
+#define NODES_TO_REMOVE         (NODES_TO_REMOVE_MIN * SECONDS_PER_MINUTE)
 
 /* USER CODE END PD */
 
@@ -114,7 +125,30 @@ typedef struct {
   TEMP_1s_t temp;
 } Window1s_t;
 
+//A single entry of data.
+typedef struct {
+    float temp;
+    float skinCond;
+    float heartRate;
+} DataEntry;
+
+// Linked list node for storing data entries. This'll be downloaded by the app.
+typedef struct DataNode_s{
+  DataEntry currEntry;
+  struct DataNode_s* nextEntry;
+  int id;
+} DataNode;
+
 static uint32_t seconds_counter = 0;
+
+// ---- UART Handle (if not available through includes) ----
+extern UART_HandleTypeDef huart1; 
+
+// ---- UART Command Processing ----
+#define UART_RX_BUFFER_SIZE 64
+static uint8_t uart_rx_buffer[UART_RX_BUFFER_SIZE];
+static volatile uint8_t uart_command_ready = 0;
+static volatile uint16_t uart_rx_index = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -156,11 +190,29 @@ static void BuildWindow_1s(Window1s_t *dst);
 static void PWM1_SetFrequency(uint32_t hz);
 static void PWM1_SetDuty(float duty_percent);
 
+// --- Data Management ---
+static void DataNode_RemoveOldest(uint32_t count);
+static void DataNode_ManageMemory(void);
+
+// --- App Communication ---
+static void ProcessUARTCommand(void);
+static void SendLinkedListToApp(void);
+static void StartUARTReceive(void);
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+//The user's calibrated data.
 DataEntry userCalibratedData;
+
+//The linked list head for storing data entries. This'll be downloaded by the app.
+DataNode* dataHead = NULL;
+DataNode* dataTail = NULL;
+
+static uint32_t seconds_counter = 0;
+static uint32_t total_nodes = 0;  // Track total number of nodes
+
 /* USER CODE END 0 */
 
 /**
@@ -211,6 +263,10 @@ int main(void)
   EDA_Start();
   // Configure MAX31865 (VBIAS+AutoConv, 50 Hz filter)
   TEMP_Init_MAX31865();
+
+  // Start UART command reception
+  StartUARTReceive();
+
   printf("Init OK (FSM starts in MONITOR)\r\n");
 
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);   // start PA8 PWM
@@ -255,6 +311,11 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+    // Process UART commands from app
+    if (uart_command_ready) {
+      ProcessUARTCommand();
+      uart_command_ready = 0;
+    }
 
     /* -- Sample board code for User push-button in interrupt mode ---- */
     if (BspButtonState == BUTTON_PRESSED)
@@ -292,6 +353,30 @@ int main(void)
 
         // Call ML/prediction (stub)
         Predict(&win);
+
+        // Store the data in the linked list
+        DataEntry currEntry;
+        currEntry.temp = win.temp.n;
+        currEntry.skinCond = win.eda.n;
+        currEntry.heartRate = 75; // PLACEHOLDER value until HR sensor is integrated.
+
+        //Create a new node, then add it to the linked list
+        DataNode* newNode = (DataNode*)malloc(sizeof(DataNode));
+        if (newNode != NULL) {
+          newNode->currEntry = currEntry;
+          newNode->id = seconds_counter;
+          newNode->nextEntry = NULL;
+
+          if (dataHead == NULL) {
+            dataHead = newNode;
+            dataTail = newNode;
+          } else {
+            dataTail->nextEntry = newNode;
+            dataTail = newNode;
+          }
+          total_nodes++;
+          DataNode_ManageMemory();
+        }
 
         // advance time and go back to monitoring
         seconds_counter++;
@@ -679,3 +764,131 @@ void assert_failed(uint8_t *file, uint32_t line)
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
+
+
+// Remove the oldest 'count' nodes from the linked list
+static void DataNode_RemoveOldest(uint32_t count)
+{
+  for (uint32_t i = 0; i < count && dataHead != NULL; i++) {
+    DataNode* nodeToRemove = dataHead;
+    dataHead = dataHead->nextEntry;
+    
+    // If we removed the last node, update tail
+    if (dataHead == NULL) {
+      dataTail = NULL;
+    }
+    
+    free(nodeToRemove);
+    total_nodes--;
+  }
+}
+
+// Manage memory by removing old data when limits are reached
+static void DataNode_ManageMemory(void)
+{
+  // Only start managing memory after we reach 10 hours of data
+  if (total_nodes >= MAX_NODES) {
+    
+    // Remove the oldest 30 minutes of data to make room
+    printf("Memory limit reached (%lu nodes): Removing %lu oldest nodes\r\n", 
+           (unsigned long)total_nodes, (unsigned long)NODES_TO_REMOVE);
+    
+    DataNode_RemoveOldest(NODES_TO_REMOVE);
+    
+    printf("Memory cleanup complete: %lu nodes remaining\r\n", 
+           (unsigned long)total_nodes);
+  }
+  
+  // Emergency cleanup if we somehow exceed maximum by a large margin
+  if (total_nodes > (MAX_NODES + 100)) {
+    uint32_t excess = total_nodes - MAX_NODES;
+    printf("Emergency cleanup: Removing %lu excess nodes\r\n", (unsigned long)excess);
+    DataNode_RemoveOldest(excess);
+  }
+}
+
+// Start UART receive for commands
+static void StartUARTReceive(void)
+{
+  uart_rx_index = 0;
+  HAL_UART_Receive_IT(&huart1, &uart_rx_buffer[uart_rx_index], 1);
+}
+
+// Process received UART commands from app
+static void ProcessUARTCommand(void)
+{
+  // Null terminate the received command
+  uart_rx_buffer[uart_rx_index] = '\0';
+  
+  printf("Received command: %s\r\n", (char*)uart_rx_buffer);
+  
+  // Check for GET_LINKED_LIST command
+  if (strstr((char*)uart_rx_buffer, "GET_LINKED_LIST") != NULL) {
+    printf("Processing GET_LINKED_LIST command...\r\n");
+    SendLinkedListToApp();
+  }
+  else if (strstr((char*)uart_rx_buffer, "GET_FILE") != NULL) {
+    printf("GET_FILE command received - streaming current data...\r\n");
+    // For GET_FILE, just continue normal operation (data will stream via printf)
+  }
+  else {
+    printf("Unknown command received\r\n");
+  }
+  
+  // Restart UART receive
+  StartUARTReceive();
+}
+
+// Send linked list data to app in parseable format
+static void SendLinkedListToApp(void)
+{
+  if (total_nodes == 0) {
+    printf("No data available\r\n");
+    printf("END_OF_LIST\r\n");
+    return;
+  }
+  
+  printf("Sending %lu linked list entries...\r\n", (unsigned long)total_nodes);
+  
+  DataNode* current = dataHead;
+  uint32_t sent_count = 0;
+  
+  while (current != NULL) {
+    // Send data in format expected by SerialConnection.py parser
+    // Format: timestamp:SECONDS,temp:VALUE,hr:VALUE,sc:VALUE,status:Normal
+    printf("timestamp:%d,temp:%.2f,hr:%.2f,sc:%.2f,status:Normal\r\n",
+           current->id,
+           current->currEntry.temp,
+           current->currEntry.heartRate,
+           current->currEntry.skinCond);
+    
+    current = current->nextEntry;
+    sent_count++;
+    
+    // Small delay to prevent overwhelming the UART
+    HAL_Delay(1);
+  }
+  
+  printf("END_OF_LIST\r\n");
+  printf("Sent %lu entries successfully\r\n", (unsigned long)sent_count);
+}
+
+// UART receive complete callback
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == USART1) {
+    // Check for end of command (newline or carriage return)
+    if (uart_rx_buffer[uart_rx_index] == '\n' || uart_rx_buffer[uart_rx_index] == '\r') {
+      uart_command_ready = 1;  // Command is ready to process
+    } else {
+      // Continue receiving if buffer has space
+      uart_rx_index++;
+      if (uart_rx_index < UART_RX_BUFFER_SIZE - 1) {
+        HAL_UART_Receive_IT(&huart1, &uart_rx_buffer[uart_rx_index], 1);
+      } else {
+        // Buffer full, process what we have
+        uart_command_ready = 1;
+      }
+    }
+  }
+}
