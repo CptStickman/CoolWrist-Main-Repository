@@ -399,7 +399,7 @@ int main(void)
             one_sec_tick = 0;
             skinCond[calIndx] = win.eda.n;
             temp[calIndx] = win.temp.n;
-            heartRate[calIndx] = 75; //Placeholder value until HR sensor is integrated.
+            heartRate[calIndx] = 75; //PLACEHOLDER value until HR sensor is integrated.
             calIndx++;
           }
         }
@@ -891,4 +891,10 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
       }
     }
   }
+}
+
+// Redraw function to redraw the display.
+static void RedrawDisplay(void)
+{
+  return;
 }
