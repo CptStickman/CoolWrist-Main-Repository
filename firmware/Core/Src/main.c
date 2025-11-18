@@ -26,6 +26,7 @@
 #include "tim.h"
 #include "gpio.h"
 #include "algorithmFunction.h"
+#include "lcd.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -275,6 +276,14 @@ int main(void)
   // PWM1_SetDuty(60.0f);
   //PWM1_SetFrequency(5000);  // switch to 5 kHz, keeps duty
 
+  // Initialize LCD display
+  LCD_Setup();
+  LCD_Clear(BLACK);
+  printf("LCD initialized\r\n");
+  
+  // Initial display draw
+  RedrawDisplay();
+
 
   /* USER CODE END 2 */
 
@@ -309,6 +318,9 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+
+  RedrawDisplay();
+
   while (1)
   {
     // Process UART commands from app
@@ -326,6 +338,8 @@ int main(void)
       BSP_LED_Toggle(LED_GREEN);
       BSP_LED_Toggle(LED_BLUE);
       BSP_LED_Toggle(LED_RED);
+      /* Redraw the display when button is pressed */
+      RedrawDisplay();
       /* ..... Perform your action ..... */
     }
     /* USER CODE END WHILE */
@@ -893,8 +907,82 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
   }
 }
 
+// Sample test image data (small 50x30 pixels for demonstration)
+// You can replace this with your actual image data
+static const uint16_t test_image_data[50 * 30] = {
+  // This creates a simple pattern - replace with your actual image
+  // Format: RGB565 (16-bit color values)
+  0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800,  // Red line
+  0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800,
+  0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800,
+  0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800,
+  0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800,
+  // Initialize remaining elements to 0 (black) - you'd fill with actual image data
+};
+
+// Define the test image structure
+static const Picture test_image = {
+  50,     // width
+  30,     // height
+  2       // bytes_per_pixel (RGB565 format)
+  // pixel_data will point to test_image_data when used
+};
+
+// Static flag to track LCD initialization
+static uint8_t lcd_initialized = 0;
+
 // Redraw function to redraw the display.
 static void RedrawDisplay(void)
 {
-  return;
+  // Initialize LCD if not already done
+  if (!lcd_initialized) {
+    LCD_Setup();  // Initialize the LCD hardware
+    LCD_Clear(BLACK);  // Clear screen with black background
+    lcd_initialized = 1;
+    printf("LCD Initialized\r\n");
+  }
+
+  // Clear the display
+  LCD_Clear(BLACK);
+
+  // Draw a border around the screen
+  LCD_DrawRectangle(0, 0, LCD_W-1, LCD_H-1, WHITE);
+
+  // Draw a title bar
+  LCD_DrawFillRectangle(0, 0, LCD_W-1, 30, BLUE);
+  LCD_DrawString(10, 8, WHITE, BLUE, "CoolWrist Display", 16, 0);
+
+  // Draw some status information
+  LCD_DrawString(10, 50, WHITE, BLACK, "Health Monitor Active", 12, 0);
+  LCD_DrawString(10, 70, GREEN, BLACK, "Status: Running", 12, 0);
+
+  // Draw a simple heart rate indicator (example)
+  LCD_DrawFillRectangle(10, 100, 60, 130, RED);
+  LCD_DrawString(15, 110, WHITE, RED, "HR", 12, 0);
+  LCD_DrawString(80, 110, RED, BLACK, "72 BPM", 12, 0);
+
+  // Draw a temperature indicator
+  LCD_DrawFillRectangle(10, 150, 60, 180, YELLOW);
+  LCD_DrawString(15, 160, BLACK, YELLOW, "TEMP", 12, 0);
+  LCD_DrawString(80, 160, YELLOW, BLACK, "36.5C", 12, 0);
+
+  // Draw a sample graph area
+  LCD_DrawRectangle(10, 200, LCD_W-10, 280, GREEN);
+  LCD_DrawString(15, 205, GREEN, BLACK, "EDA Signal", 12, 0);
+  
+  // Draw a simple zigzag pattern to simulate a waveform
+  for (int x = 15; x < LCD_W-15; x += 10) {
+    int y1 = 240 + ((x % 20) ? 10 : -10);  // Simple zigzag
+    int y2 = 240 + (((x + 10) % 20) ? 10 : -10);
+    LCD_DrawLine(x, y1, x + 10, y2, GREEN);
+  }
+
+  // Draw the test image (uncomment when you have actual image data)
+  // LCD_DrawPicture(50, 300, &test_image);
+
+  // Draw current time/date area
+  LCD_DrawString(10, LCD_H-40, CYAN, BLACK, "Time: 12:34:56", 12, 0);
+  LCD_DrawString(10, LCD_H-25, CYAN, BLACK, "Date: Nov 13, 2025", 12, 0);
+
+  printf("Display redrawn\r\n");
 }
