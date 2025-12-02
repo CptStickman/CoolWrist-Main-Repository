@@ -138,6 +138,7 @@ typedef struct DataNode_s{
   DataEntry currEntry;
   struct DataNode_s* nextEntry;
   int id;
+  bool nodeEpisodeState;
 } DataNode;
 
 static uint32_t seconds_counter = 0;
@@ -213,6 +214,10 @@ DataNode* dataTail = NULL;
 
 static uint32_t seconds_counter = 0;
 static uint32_t total_nodes = 0;  // Track total number of nodes
+
+// ---- Algorithm Function variables ----
+int episodeCount = 0;  // Number of consecutive checks indicating an episode
+bool episodeState = false;  // Current episode state
 
 /* USER CODE END 0 */
 
@@ -365,14 +370,24 @@ int main(void)
         Print_EDA_Window(&win.eda);
         Print_TEMP_Window(&win.temp);
 
-        // Call ML/prediction (stub)
-        Predict(&win);
-
-        // Store the data in the linked list
+        // Store the data in a single entry, ready for the algorithm and linked list storage
         DataEntry currEntry;
         currEntry.temp = win.temp.n;
         currEntry.skinCond = win.eda.n;
         currEntry.heartRate = 75; // PLACEHOLDER value until HR sensor is integrated.
+
+        // Call Prediction Algorithm
+        //Predict(&win);
+        episodeCount = AlgorithmFunction(currEntry, episodeState, episodeCount, userCalibratedData);
+        if (episodeCount >= 10 && !episodeState) {
+            // Episode started
+            episodeState = true;
+            //printf("Episode started!\n");
+        } else if (episodeCount < 3 && episodeState) {
+            // Episode ended
+            episodeState = false;
+            //printf("Episode ended!\n");
+        }
 
         //Create a new node, then add it to the linked list
         DataNode* newNode = (DataNode*)malloc(sizeof(DataNode));
@@ -380,6 +395,7 @@ int main(void)
           newNode->currEntry = currEntry;
           newNode->id = seconds_counter;
           newNode->nextEntry = NULL;
+          newNode->nodeEpisodeState = episodeState;
 
           if (dataHead == NULL) {
             dataHead = newNode;
@@ -874,7 +890,8 @@ static void SendLinkedListToApp(void)
            current->id,
            current->currEntry.temp,
            current->currEntry.heartRate,
-           current->currEntry.skinCond);
+           current->currEntry.skinCond,
+           current->nodeEpisodeState ? "Episode" : "Normal");
     
     current = current->nextEntry;
     sent_count++;
