@@ -1,6 +1,7 @@
 import serial
 import serial.tools.list_ports
 import os
+import sys
 import time  # Added for stream capture timing
 
 BAUDRATE = 115200
@@ -187,9 +188,9 @@ def parse_linked_list_entry(raw_entry):
     """
     Parse a linked list entry from the device and convert to health data format.
     Expected input format from device might be something like:
-    "timestamp:1234567890,temp:28.5,hr:75,sc:1100.5,status:Normal,next:0x12345678"
+    "timestamp:1234567890,hr:75,sc:1100.5,status:Normal,next:0x12345678"
     
-    Output format should be: "HH:MM:SS Temperature Heart_Rate Skin_Conductivity Episode"
+    Output format should be: "HH:MM:SS Heart_Rate Skin_Conductivity Episode"
     """
     try:
         # This is a placeholder parser - you'll need to adjust based on your actual device format
@@ -209,7 +210,7 @@ def parse_linked_list_entry(raw_entry):
         
         # Extract values (adjust keys based on your device's actual format)
         timestamp = entry_data.get('timestamp', entry_data.get('time', '00:00:00'))
-        temperature = entry_data.get('temp', entry_data.get('temperature', '0.0'))
+        # Removed temperature extraction
         heart_rate = entry_data.get('hr', entry_data.get('heart_rate', '0.0'))
         skin_conductivity = entry_data.get('sc', entry_data.get('skin_conductivity', '0.0'))
         episode = entry_data.get('status', entry_data.get('episode', 'Normal'))
@@ -231,8 +232,8 @@ def parse_linked_list_entry(raw_entry):
             except:
                 timestamp = "00:00:00"
         
-        # Format as health data entry
-        health_entry = f"{timestamp} {temperature} {heart_rate} {skin_conductivity} {episode}"
+        # Format as health data entry (removed temperature)
+        health_entry = f"{timestamp} {heart_rate} {skin_conductivity} {episode}"
         return health_entry
         
     except Exception as e:

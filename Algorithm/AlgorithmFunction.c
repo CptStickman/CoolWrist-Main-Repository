@@ -6,8 +6,7 @@
 int deterministicAlgorithm(DataEntry entry, bool episodeState, int episodeCount, DataEntry normalStats){ 
     if(!episodeState){  //If the user is not in an episode
         bool skinCondValid = skinCondCheckNE(entry.skinCond, normalStats.skinCond);
-        bool heartRateValid = heartRateCheckNE(entry.heartRate, normalStats.heartRate);
-        if(skinCondValid && heartRateValid){
+        if(skinCondValid){
             //printf("All parameters are leaning towards an episode.\n");
             episodeCount++;
         } else {
@@ -25,8 +24,7 @@ int deterministicAlgorithm(DataEntry entry, bool episodeState, int episodeCount,
 
     } else {  //If the user is in an episode already
         bool skinCondValid = skinCondCheckE(entry.skinCond, normalStats.skinCond);
-        bool heartRateValid = heartRateCheckE(entry.heartRate, normalStats.heartRate);
-        if(skinCondValid && heartRateValid){
+        if(skinCondValid){
             //printf("All parameters suggest Episode is continuing.\n");
             if(episodeCount > 0){
                 episodeCount--;

@@ -378,7 +378,7 @@ int main(void)
 
         // Call Prediction Algorithm
         //Predict(&win);
-        episodeCount = AlgorithmFunction(currEntry, episodeState, episodeCount, userCalibratedData);
+        episodeCount = deterministicAlgorithm(currEntry, episodeState, episodeCount, userCalibratedData);
         if (episodeCount >= 10 && !episodeState) {
             // Episode started
             episodeState = true;

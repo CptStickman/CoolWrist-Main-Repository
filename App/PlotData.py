@@ -11,8 +11,8 @@ import re
 def is_valid_health_data_file(filepath):
     """
     Check if a file has the correct health data format.
-    Expected format: Time Temperature Heart_Rate Skin_Conductivity Episode
-    Example: 00:00:00 28.91 76.0 1103.56 Normal
+    Expected format: Time Heart_Rate Skin_Conductivity Episode
+    Example: 00:00:00 76.0 1103.56 Normal
     """
     try:
         with open(filepath, 'r') as file:
@@ -25,8 +25,8 @@ def is_valid_health_data_file(filepath):
         # Split the line into components
         parts = first_line.split()
         
-        # Should have exactly 5 parts: Time, Temperature, Heart_Rate, Skin_Conductivity, Episode
-        if len(parts) != 5:
+        # Should have exactly 4 parts: Time, Heart_Rate, Skin_Conductivity, Episode
+        if len(parts) != 4:
             return False
             
         # Check if first part matches time format (HH:MM:SS)
@@ -34,15 +34,14 @@ def is_valid_health_data_file(filepath):
         if not re.match(time_pattern, parts[0]):
             return False
             
-        # Check if second and third parts are valid numbers (temperature and heart rate)
+        # Check if second and third parts are valid numbers (heart rate and skin conductivity)
         try:
-            float(parts[1])  # Temperature
-            float(parts[2])  # Heart Rate
-            float(parts[3])  # Skin Conductivity
+            float(parts[1])  # Heart Rate
+            float(parts[2])  # Skin Conductivity
         except ValueError:
             return False
             
-        # Fifth part should be episode status (typically "Normal" or similar text)
+        # Fourth part should be episode status (typically "Normal" or similar text)
         # We don't need to validate the exact value, just that it exists
         
         return True
@@ -56,28 +55,23 @@ def plot_specific_file(filename):
         # Load the data
         filepath = os.path.join("DataFolder", filename)
         data = pd.read_csv(filepath, sep=' ', header=None, 
-                          names=['Time', 'Temperature', 'Heart_Rate', 'Skin_Conductivity', 'Episode'])
+                          names=['Time', 'Heart_Rate', 'Skin_Conductivity', 'Episode'])
         
         # Create a simple plot
-        fig, axes = plt.subplots(3, 1, figsize=(12, 8))
+        fig, axes = plt.subplots(2, 1, figsize=(12, 6))
         fig.suptitle(f'Health Data Overview - {filename}', fontsize=14, fontweight='bold')
         
         # Plot each metric
-        axes[0].plot(data['Temperature'], color='red', linewidth=0.8)
-        axes[0].set_title('Temperature (°C)')
+        axes[0].plot(data['Heart_Rate'], color='blue', linewidth=0.8)
+        axes[0].set_title('Heart Rate (BPM)')
         axes[0].set_xlim(0, len(data) - 1)
         axes[0].grid(True, alpha=0.3)
         
-        axes[1].plot(data['Heart_Rate'], color='blue', linewidth=0.8)
-        axes[1].set_title('Heart Rate (BPM)')
+        axes[1].plot(data['Skin_Conductivity'], color='green', linewidth=0.8)
+        axes[1].set_title('Skin Conductivity (mV)')
+        axes[1].set_xlabel('Time (seconds)')
         axes[1].set_xlim(0, len(data) - 1)
         axes[1].grid(True, alpha=0.3)
-        
-        axes[2].plot(data['Skin_Conductivity'], color='green', linewidth=0.8)
-        axes[2].set_title('Skin Conductivity (mV)')
-        axes[2].set_xlabel('Time (seconds)')
-        axes[2].set_xlim(0, len(data) - 1)
-        axes[2].grid(True, alpha=0.3)
         
         plt.tight_layout()
         plt.show()
@@ -115,9 +109,9 @@ def plot_Data():
         plot_specific_file(available_files[0])
     else:
         messagebox.showerror("Error", "No valid health data files found in DataFolder!\n\n" +
-                           "Files must have the format:\nTime Temperature Heart_Rate Skin_Conductivity Episode\n" +
-                           "Example: 00:00:00 28.91 76.0 1103.56 Normal")
-
+                           "Files must have the format:\nTime Heart_Rate Skin_Conductivity Episode\n" +
+                           "Example: 00:00:00 76.0 1103.56 Normal")
+        
 def create_file_selection_interface(root, back_callback):
     """Create the file selection interface in the provided root window"""
     # Get available files
@@ -125,8 +119,8 @@ def create_file_selection_interface(root, back_callback):
     
     if not available_files:
         messagebox.showerror("Error", "No valid health data files found in DataFolder!\n\n" +
-                           "Files must have the format:\nTime Temperature Heart_Rate Skin_Conductivity Episode\n" +
-                           "Example: 00:00:00 28.91 76.0 1103.56 Normal")
+                           "Files must have the format:\nTime Heart_Rate Skin_Conductivity Episode\n" +
+                           "Example: 00:00:00 76.0 1103.56 Normal")
         back_callback()
         return None, None
     
