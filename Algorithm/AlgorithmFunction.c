@@ -86,72 +86,72 @@ bool heartRateCheckE(float heartRate, float normalHeartRate){
     return false;
 }
 
-void main() {
-    FILE *inputFile = fopen("health_data.txt", "r");
-    FILE *outputFile = fopen("health_data_algorithm.txt", "w");
+// void main() {
+//     FILE *inputFile = fopen("health_data.txt", "r");
+//     FILE *outputFile = fopen("health_data_algorithm.txt", "w");
     
-    if (inputFile == NULL) {
-        printf("Error: Could not open health_data.txt\n");
-        return;
-    }
+//     if (inputFile == NULL) {
+//         printf("Error: Could not open health_data.txt\n");
+//         return;
+//     }
     
-    if (outputFile == NULL) {
-        printf("Error: Could not create health_data_algorithm.txt\n");
-        fclose(inputFile);
-        return;
-    }
+//     if (outputFile == NULL) {
+//         printf("Error: Could not create health_data_algorithm.txt\n");
+//         fclose(inputFile);
+//         return;
+//     }
     
-    // Use pre-inputted baseline values
-    DataEntry normalStats = {29, 1100, 75}; // Temp, SkinCond, HeartRate
-    printf("Using pre-set baseline: Temp=%.2f, HR=%.2f, SC=%.2f\n", 
-           normalStats.temp, normalStats.heartRate, normalStats.skinCond);
+//     // Use pre-inputted baseline values
+//     DataEntry normalStats = {29, 1100, 75}; // Temp, SkinCond, HeartRate
+//     printf("Using pre-set baseline: Temp=%.2f, HR=%.2f, SC=%.2f\n", 
+//            normalStats.temp, normalStats.heartRate, normalStats.skinCond);
     
-    // Process all data through algorithm
-    bool episodeState = false;
-    int episodeCount = 0;
-    int lineNumber = 0;
-    int totalEpisodesDetected = 0;
-    char line[256];
-    char time[16];
+//     // Process all data through algorithm
+//     bool episodeState = false;
+//     int episodeCount = 0;
+//     int lineNumber = 0;
+//     int totalEpisodesDetected = 0;
+//     char line[256];
+//     char time[16];
     
-    fprintf(outputFile, "Time Temperature HeartRate SkinConductivity EpisodeCount AlgorithmPrediction ActualEpisode ActualStatus\n");
+//     fprintf(outputFile, "Time Temperature HeartRate SkinConductivity EpisodeCount AlgorithmPrediction ActualEpisode ActualStatus\n");
     
-    printf("Processing health data through algorithm...\n");
-    while (fgets(line, sizeof(line), inputFile)) {
-        DataEntry entry;
-        char actualEpisodeStatus[16];
-        if (sscanf(line, "%s %f %f %f %s", time, &entry.temp, &entry.heartRate, &entry.skinCond, actualEpisodeStatus) == 5) {
-            lineNumber++;
+//     printf("Processing health data through algorithm...\n");
+//     while (fgets(line, sizeof(line), inputFile)) {
+//         DataEntry entry;
+//         char actualEpisodeStatus[16];
+//         if (sscanf(line, "%s %f %f %f %s", time, &entry.temp, &entry.heartRate, &entry.skinCond, actualEpisodeStatus) == 5) {
+//             lineNumber++;
             
-            // Determine actual episode status from data
-            bool actualEpisode = (strncmp(actualEpisodeStatus, "E", 1) == 0);
+//             // Determine actual episode status from data
+//             bool actualEpisode = (strncmp(actualEpisodeStatus, "E", 1) == 0);
             
-            // Run algorithm
-            episodeCount = deterministicAlgorithm(entry, episodeState, episodeCount, normalStats);
+//             // Run algorithm
+//             episodeCount = deterministicAlgorithm(entry, episodeState, episodeCount, normalStats);
             
-            // Update episode state based on episode count
-            if (!episodeState && episodeCount >= 10) {
-                episodeState = true;
-                totalEpisodesDetected++;
-                printf("Episode started at line %d (time %s)\n", lineNumber, time);
-            } else if (episodeState && episodeCount < 3) {
-                episodeState = false;
-                printf("Episode ended at line %d (time %s)\n", lineNumber, time);
-            }
+//             // Update episode state based on episode count
+//             if (!episodeState && episodeCount >= 10) {
+//                 episodeState = true;
+//                 totalEpisodesDetected++;
+//                 printf("Episode started at line %d (time %s)\n", lineNumber, time);
+//             } else if (episodeState && episodeCount < 3) {
+//                 episodeState = false;
+//                 printf("Episode ended at line %d (time %s)\n", lineNumber, time);
+//             }
             
-            // Write results to output file
-            fprintf(outputFile, "%s %.2f %.2f %.2f %d %s %s %s\n", 
-                   time, entry.temp, entry.heartRate, entry.skinCond, 
-                   episodeCount, episodeState ? "YES" : "NO", 
-                   actualEpisode ? "YES" : "NO", actualEpisodeStatus);
-        }
-    }
+//             // Write results to output file
+//             fprintf(outputFile, "%s %.2f %.2f %.2f %d %s %s %s\n", 
+//                    time, entry.temp, entry.heartRate, entry.skinCond, 
+//                    episodeCount, episodeState ? "YES" : "NO", 
+//                    actualEpisode ? "YES" : "NO", actualEpisodeStatus);
+//         }
+//     }
     
-    fclose(inputFile);
-    fclose(outputFile);
+//     fclose(inputFile);
+//     fclose(outputFile);
     
-    printf("Algorithm processing complete!\n");
-    printf("Results written to health_data_algorithm.txt\n");
-    printf("Total lines processed: %d\n", lineNumber);
-    printf("Total episodes detected by algorithm: %d\n", totalEpisodesDetected);
-}
+//     printf("Algorithm processing complete!\n");
+//     printf("Results written to health_data_algorithm.txt\n");
+//     printf("Total lines processed: %d\n", lineNumber);
+//     printf("Total episodes detected by algorithm: %d\n", totalEpisodesDetected);
+// }

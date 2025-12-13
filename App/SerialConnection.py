@@ -3,17 +3,23 @@ import serial.tools.list_ports
 import os
 import sys
 import time  # Added for stream capture timing
+import datetime
 
 BAUDRATE = 115200
 REQUEST_COMMAND = b"GET_FILE\n"
 REQUEST_LINKED_LIST = b"GET_LINKED_LIST\n"
 SAVE_DIR = "DataFolder"
-SAVE_FILE = "TestFileDownload.txt"
-LINKED_LIST_FILE = "health_data_linked_list.txt"
+SAVE_FILE = "TestFileDownload.txt"  #Lagacy Filename
+LINKED_LIST_FILE = "health_data_linked_list.txt"  #Lagacy Filename
 
 # STM32 VID/PID - Basic example values
 STM32_VID = 0x0483  # STMicroelectronics VID
 STM32_PID = 0x374E  # STM32 Virtual COM Port PID
+
+def generate_timestamp_filename(prefix="health_data", extension="txt"):
+    """Generate a unique filename based on current date and time"""
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    return f"{prefix}_{timestamp}.{extension}"
 
 def find_uart_device(vid, pid):
     ports = serial.tools.list_ports.comports()
@@ -87,7 +93,11 @@ def list_all_serial_devices():
 def download_file_from_device(port):
     """Capture streaming data from device and save to file"""
     os.makedirs(SAVE_DIR, exist_ok=True)
-    save_path = os.path.join(SAVE_DIR, SAVE_FILE)
+    
+    # Generate unique filename based on current timestamp
+    unique_filename = generate_timestamp_filename("stream_data", "txt")
+    save_path = os.path.join(SAVE_DIR, unique_filename)
+
     try:
         with serial.Serial(port, BAUDRATE, timeout=2) as ser:  # Reduced timeout for stream capture
             # Clear any existing data in buffer first
@@ -124,7 +134,10 @@ def download_file_from_device(port):
 def download_linked_list_from_device(port):
     """Read linked list data from device and save to health_data format"""
     os.makedirs(SAVE_DIR, exist_ok=True)
-    save_path = os.path.join(SAVE_DIR, LINKED_LIST_FILE)
+
+    # Generate unique filename based on current timestamp
+    unique_filename = generate_timestamp_filename("health_data", "txt")
+    save_path = os.path.join(SAVE_DIR, unique_filename)
     
     try:
         with serial.Serial(port, BAUDRATE, timeout=5) as ser:
@@ -190,7 +203,7 @@ def parse_linked_list_entry(raw_entry):
     Expected input format from device might be something like:
     "timestamp:1234567890,hr:75,sc:1100.5,status:Normal,next:0x12345678"
     
-    Output format should be: "HH:MM:SS Heart_Rate Skin_Conductivity Episode"
+    Output format should be: "HH:MM:SS Skin_Conductivity Episode"
     """
     try:
         # This is a placeholder parser - you'll need to adjust based on your actual device format
@@ -211,7 +224,7 @@ def parse_linked_list_entry(raw_entry):
         # Extract values (adjust keys based on your device's actual format)
         timestamp = entry_data.get('timestamp', entry_data.get('time', '00:00:00'))
         # Removed temperature extraction
-        heart_rate = entry_data.get('hr', entry_data.get('heart_rate', '0.0'))
+        # heart_rate = entry_data.get('hr', entry_data.get('heart_rate', '0.0'))
         skin_conductivity = entry_data.get('sc', entry_data.get('skin_conductivity', '0.0'))
         episode = entry_data.get('status', entry_data.get('episode', 'Normal'))
         
@@ -233,7 +246,7 @@ def parse_linked_list_entry(raw_entry):
                 timestamp = "00:00:00"
         
         # Format as health data entry (removed temperature)
-        health_entry = f"{timestamp} {heart_rate} {skin_conductivity} {episode}"
+        health_entry = f"{timestamp} {skin_conductivity} {episode}"
         return health_entry
         
     except Exception as e:

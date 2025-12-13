@@ -847,11 +847,20 @@ static void StartUARTReceive(void)
 // Process received UART commands from app
 static void ProcessUARTCommand(void)
 {
-  // Null terminate the received command
-  uart_rx_buffer[uart_rx_index] = '\0';
+  // Ensure we don't write beyond buffer bounds
+  if (uart_rx_index < UART_RX_BUFFER_SIZE) {
+    uart_rx_buffer[uart_rx_index] = '\0';
+  } else {
+    uart_rx_buffer[UART_RX_BUFFER_SIZE - 1] = '\0';
+    uart_rx_index = UART_RX_BUFFER_SIZE - 1; // Clamp index
+  }
   
   printf("Received command: %s\r\n", (char*)uart_rx_buffer);
   
+  // Clear buffer after processing to prevent contamination
+  memset(uart_rx_buffer, 0, UART_RX_BUFFER_SIZE);
+  
+
   // Check for GET_LINKED_LIST command
   if (strstr((char*)uart_rx_buffer, "GET_LINKED_LIST") != NULL) {
     printf("Processing GET_LINKED_LIST command...\r\n");
@@ -897,7 +906,7 @@ static void SendLinkedListToApp(void)
     sent_count++;
     
     // Small delay to prevent overwhelming the UART
-    HAL_Delay(1);
+    HAL_Delay(100);
   }
   
   printf("END_OF_LIST\r\n");

@@ -41,7 +41,7 @@ def read_from_file():
 def main():
     root = tk.Tk()
     root.title("CoolWrist App")
-    root.geometry("300x400")  # Width x Height
+    root.geometry("400x500")  # Width x Height
     root.configure(bg="#054067")  # Dark blue-gray background
    
     # Store references to widgets and their pack configurations
@@ -93,17 +93,17 @@ def main():
     download_btn.pack(pady=5)
     main_widgets.append((download_btn, {'pady': 5}))
 
-    test_conn_btn = tk.Button(root, text="Test Connection", command=handle_test_connection,
-                             bg="#F39C12", fg="white", font=("Arial", 10, "bold"),
-                             padx=20, pady=8, width=15)
-    test_conn_btn.pack(pady=5)
-    main_widgets.append((test_conn_btn, {'pady': 5}))
-
     graph_btn = tk.Button(root, text="Show Graph", command=show_graph_selection,
                          bg="#3498DB", fg="white", font=("Arial", 10, "bold"),
                          padx=20, pady=8, width=15)
     graph_btn.pack(pady=5)
     main_widgets.append((graph_btn, {'pady': 5}))
+
+    test_conn_btn = tk.Button(root, text="Test Connection", command=handle_test_connection,
+                             bg="#3498DB", fg="white", font=("Arial", 10, "bold"),
+                             padx=20, pady=8, width=15)
+    test_conn_btn.pack(pady=5)
+    main_widgets.append((test_conn_btn, {'pady': 5}))
 
     exit_btn = tk.Button(root, text="Exit", command=root.destroy,
                         bg="#E74C3C", fg="white", font=("Arial", 10, "bold"),
