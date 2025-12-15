@@ -25,18 +25,23 @@
 #include "spi.h"
 #include "tim.h"
 #include "gpio.h"
-#include "algorithmFunction.h"
-#include "lcd.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <string.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdbool.h>
 #include <stdlib.h>
-//#include "usart.h"
-// #include "fx_api.h"
-// #include "fx_stm32_sd_driver.h"
+
+#include "predict.h"
+#include "stm32u5xx_hal_dma_ex.h"   // prototypes for HAL_DMAEx_List_*
+extern DMA_HandleTypeDef handle_GPDMA1_Channel0;
+#define EDA_USE_DMA 0   // set to 1 later when DMA works
+#include "stm32u5xx_nucleo.h"         // for COM1
+extern UART_HandleTypeDef hcom_uart[];
+
+
 
 /* USER CODE END Includes */
 
@@ -45,7 +50,7 @@
 typedef enum {
   APP_MONITOR = 0,
   APP_PRINT   = 1,
-  APP_CALIBRATION = 2
+  APP_MOTOR   = 2
 } AppState;
 
 /* USER CODE END PTD */
@@ -60,15 +65,6 @@ typedef enum {
 // ---- TEMP (MAX31865) ----
 #define TEMP_RING_N   64u            // gotta check with the sensor
 
-// ---- Data Management ----
-#define MAX_DATA_HOURS           10u      // Maximum hours of data to keep
-#define CLEANUP_INTERVAL_MIN     30u      // Clean up every 30 minutes  
-#define NODES_TO_REMOVE_MIN      30u      // Remove 30 minutes of data each cleanup
-#define SECONDS_PER_HOUR         3600u
-#define SECONDS_PER_MINUTE       60u
-#define MAX_NODES               (MAX_DATA_HOURS * SECONDS_PER_HOUR)
-#define CLEANUP_INTERVAL_SEC    (CLEANUP_INTERVAL_MIN * SECONDS_PER_MINUTE)
-#define NODES_TO_REMOVE         (NODES_TO_REMOVE_MIN * SECONDS_PER_MINUTE)
 
 /* USER CODE END PD */
 
@@ -84,20 +80,16 @@ __IO uint32_t BspButtonState = BUTTON_RELEASED;
 
 /* USER CODE BEGIN PV */
 
-
-// ============ FileX File System ============
-// static FX_MEDIA sd_disk;
-// static FX_FILE data_file;
-// static CHAR media_memory[512];
-// static CHAR filename_buffer[64];
-// static UINT file_system_ready = 0;
-// static UINT file_open = 0;
-
 // ---- EDA acquisition (ADC @ 200 Hz) ----
 
 static uint16_t eda_buf[BUF_SAMPLES];             // DMA target
 static volatile const uint16_t *eda_win_ptr = NULL; // points to the half that just finished
 static volatile uint32_t eda_seconds = 0;         // simple 1s counter
+
+#if !EDA_USE_DMA
+static volatile uint16_t eda_soft[FS_EDA];
+static volatile uint16_t eda_i = 0;
+#endif
 
 // ============ TEMP (MAX31865) acquisition ============
 static uint16_t temp_ring[TEMP_RING_N];
@@ -105,6 +97,52 @@ static volatile uint16_t temp_wi = 0;
 static volatile uint16_t temp_samples_this_sec = 0;
 static volatile uint16_t temp_sec_count_snapshot = 0;
 static volatile uint8_t  one_sec_tick = 0;             // fired by TIM7
+static void TEMP_DebugPoll(void);
+static uint8_t TEMP_Read_Config(void);
+static uint8_t TEMP_Read_FaultStatus(void);
+
+// ---- PPG (MAX32664 + MAX30101 via I2C1) ----
+// MAX32664 uses 0xAA (write) / 0xAB (read) 8-bit address → 7-bit 0x55
+// HAL expects (7-bit << 1), so we pass 0xAA.
+
+extern I2C_HandleTypeDef hi2c1;   // PPG hub on I2C1
+
+#define MAX32664_I2C_ADDR   (0x55u << 1)   // 7-bit 0x55 -> HAL 8-bit
+#define HUB_CMD_PREFIX      0xAA
+#define HUB_RSP_PREFIX      0xAB
+#define HUB_FAMILY_DEVICE_MODE   0x01
+#define HUB_FAMILY_OUTPUT_MODE   0x10
+#define HUB_FAMILY_SENSOR        0x44
+#define HUB_FAMILY_ALGO_MODE     0x52
+#define HUB_FAMILY_FIFO          0x12
+// CubeMX labels for MFIO / RESET:
+#define PPG_MFIO_PORT   PPG_MFIO_GPIO_Port
+#define PPG_MFIO_PIN    PPG_MFIO_Pin
+#define PPG_RST_PORT    PPG_RESET_GPIO_Port
+#define PPG_RST_PIN     PPG_RESET_Pin
+
+//dexter define
+// ---- Data Management ----
+#define MAX_DATA_HOURS           1u      // Maximum hours of data to keep
+#define CLEANUP_INTERVAL_MIN     30u      // Clean up every 30 minutes  
+#define NODES_TO_REMOVE_MIN      30u      // Remove 30 minutes of data each cleanup
+#define SECONDS_PER_HOUR         3600u
+#define SECONDS_PER_MINUTE       60u
+#define MAX_NODES               (MAX_DATA_HOURS * SECONDS_PER_HOUR)
+#define CLEANUP_INTERVAL_SEC    (CLEANUP_INTERVAL_MIN * SECONDS_PER_MINUTE)
+#define NODES_TO_REMOVE         (NODES_TO_REMOVE_MIN * SECONDS_PER_MINUTE)
+// ---- UART Command Processing ----
+#define UART_RX_BUFFER_SIZE 64
+static uint8_t uart_rx_buffer[UART_RX_BUFFER_SIZE];
+// static volatile uint8_t uart_command_ready = 0;
+static volatile uint16_t uart_rx_index = 0;
+void calibration();
+
+
+// predict results 
+
+int results = 0;
+
 
 // ============ FSM ============
 static AppState app_state = APP_MONITOR;
@@ -121,19 +159,21 @@ typedef struct {
 } TEMP_1s_t;
 
 typedef struct {
+  uint16_t hr_x10;    // heart rate * 10 (e.g. 635 = 63.5 bpm)
+  uint8_t  confidence;
+  uint8_t  valid;     // 0 = no new sample this second
+} PPG_1s_t;
+
+typedef struct {
   uint32_t sec_index; // increments each second
   EDA_1s_t  eda;
   TEMP_1s_t temp;
+  PPG_1s_t  ppg; 
 } Window1s_t;
+ 
+//dexter parts begin 
 
-//A single entry of data.
-typedef struct {
-    float temp;
-    float skinCond;
-    float heartRate;
-} DataEntry;
 
-// Linked list node for storing data entries. This'll be downloaded by the app.
 typedef struct DataNode_s{
   DataEntry currEntry;
   struct DataNode_s* nextEntry;
@@ -141,42 +181,50 @@ typedef struct DataNode_s{
   bool nodeEpisodeState;
 } DataNode;
 
+
+//dexter parts end 
+
 static uint32_t seconds_counter = 0;
+static PPG_1s_t latest_ppg = {0};
+static void PPG_Init(void);
+static void PPG_PollOnce(void);
+static void Print_PPG_1s(const PPG_1s_t *p);
 
-// ---- UART Handle (if not available through includes) ----
-extern UART_HandleTypeDef huart1; 
+int episodeCount = 0;  // Number of consecutive checks indicating an episode
+bool episodeState = 0;  // Current episode state
+bool prevEpState = 0;  //The last episode state
 
-// ---- UART Command Processing ----
-#define UART_RX_BUFFER_SIZE 64
-static uint8_t uart_rx_buffer[UART_RX_BUFFER_SIZE];
-static volatile uint8_t uart_command_ready = 0;
-static volatile uint16_t uart_rx_index = 0;
+
+
+// ============ USART COMMAND ============
+#define RX_LINE_MAX   128
+
+static uint8_t  uart_rx_byte;
+static uint8_t  rx_line[RX_LINE_MAX];
+static volatile uint16_t rx_len = 0;
+static volatile uint8_t  rx_line_ready = 0;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void SystemPower_Config(void);
 /* USER CODE BEGIN PFP */
-
-// ---- FileX helpers ----
-// static UINT FS_Init(void);
-// static UINT FS_CreateDataFile(void);
-// static UINT FS_WriteDataToFile(const char* data);
-// static UINT FS_CloseDataFile(void);
-
-// // Modified print functions for FileX
-// static void Print_EDA_Window_ToFile(const EDA_1s_t *w);
-// static void Print_TEMP_Window_ToFile(const TEMP_1s_t *w);
-// static void Predict_ToFile(const Window1s_t *win);
-
-
 // ---- EDA helpers ----
 static void EDA_Start(void);
 static void ADC1_DoCalibration(void);
+static inline uint32_t EDA_CodeTo_mV(uint16_t code);
 
 // ---- TEMP/MAX31865 helpers ----
 static void TEMP_Init_MAX31865(void);
 static uint16_t TEMP_Read_RTD_Raw(void);
+
+// -------- ppg helpers ------------
+static void    PPG_Init_MAX32664(void);
+static uint8_t PPG_Read_SensorHubStatus(uint8_t *status);
+static uint8_t PPG_Read_FIFO_Samples(uint8_t *samples);
+static void    Print_PPG_Debug(const PPG_1s_t *p);
+
 
 // ---- GPIO helpers (CS) ----
 static inline void TEMP_CS_Low(void);
@@ -192,6 +240,11 @@ static void BuildWindow_1s(Window1s_t *dst);
 static void PWM1_SetFrequency(uint32_t hz);
 static void PWM1_SetDuty(float duty_percent);
 
+// --- usart commadn --- 
+static void UART_StartRx_IT(void);
+// static void UART_SendText(const char *s);
+// static void Send_EDA_1s_File_RAW_quick(void);
+
 // --- Data Management ---
 static void DataNode_RemoveOldest(uint32_t count);
 static void DataNode_ManageMemory(void);
@@ -199,7 +252,11 @@ static void DataNode_ManageMemory(void);
 // --- App Communication ---
 static void ProcessUARTCommand(void);
 static void SendLinkedListToApp(void);
-static void StartUARTReceive(void);
+// static void StartUARTReceive(void);
+
+static volatile uint8_t uart_cmd_ready = 0;
+
+
 
 /* USER CODE END PFP */
 
@@ -212,13 +269,8 @@ DataEntry userCalibratedData;
 DataNode* dataHead = NULL;
 DataNode* dataTail = NULL;
 
-static uint32_t seconds_counter = 0;
+// static uint32_t seconds_counter = 0;
 static uint32_t total_nodes = 0;  // Track total number of nodes
-
-// ---- Algorithm Function variables ----
-int episodeCount = 0;  // Number of consecutive checks indicating an episode
-bool episodeState = false;  // Current episode state
-
 /* USER CODE END 0 */
 
 /**
@@ -261,6 +313,7 @@ int main(void)
   MX_I2C1_Init();
   MX_TIM7_Init();
   MX_TIM1_Init();
+  MX_I2C2_Init();
   /* USER CODE BEGIN 2 */
 	
 	// Start periodic timers
@@ -269,25 +322,15 @@ int main(void)
   EDA_Start();
   // Configure MAX31865 (VBIAS+AutoConv, 50 Hz filter)
   TEMP_Init_MAX31865();
+  PPG_Init();
 
-  // Start UART command reception
-  StartUARTReceive();
-
-  printf("Init OK (FSM starts in MONITOR)\r\n");
+  // printf("Init OK (FSM starts in MONITOR)\r\n");
 
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);   // start PA8 PWM
-
   PWM1_SetDuty(25.0f);     // 25% duty at 1 kHz
   // PWM1_SetDuty(60.0f);
-  //PWM1_SetFrequency(5000);  // switch to 5 kHz, keeps duty
-
-  // Initialize LCD display
-  LCD_Setup();
-  LCD_Clear(BLACK);
-  printf("LCD initialized\r\n");
-  
-  // Initial display draw
-  RedrawDisplay();
+  PWM1_SetFrequency(5000);  // switch to 5 kHz, keeps duty
+  HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
 
 
   /* USER CODE END 2 */
@@ -310,8 +353,13 @@ int main(void)
   {
     Error_Handler();
   }
+  HAL_NVIC_SetPriority(USART1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(USART1_IRQn);
+
 
   /* USER CODE BEGIN BSP */
+  printf("COM port is working now\r\n");
+  UART_StartRx_IT();
 
   /* Infinite loop */
   /* -- Sample board code to switch on leds ---- */
@@ -319,19 +367,20 @@ int main(void)
   BSP_LED_On(LED_GREEN);
   BSP_LED_On(LED_BLUE);
   BSP_LED_On(LED_RED);
+        
   /* USER CODE END BSP */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-
-  RedrawDisplay();
-
+  HAL_Delay(5000);
+  calibration();
   while (1)
   {
-    // Process UART commands from app
-    if (uart_command_ready) {
-      ProcessUARTCommand();
-      uart_command_ready = 0;
+
+    if (uart_cmd_ready) {
+      uart_cmd_ready = 0;
+      printf("isr get called!\n");
+      ProcessUARTCommand();   // uses uart_rx_buffer
     }
 
     /* -- Sample board code for User push-button in interrupt mode ---- */
@@ -343,19 +392,65 @@ int main(void)
       BSP_LED_Toggle(LED_GREEN);
       BSP_LED_Toggle(LED_BLUE);
       BSP_LED_Toggle(LED_RED);
-      /* Redraw the display when button is pressed */
-      RedrawDisplay();
       /* ..... Perform your action ..... */
+
+      // APP_CALIBRATION happen here once the botton preessed
+      int calIndx = 0;
+      float skinCond[10];
+      int sum_eda = 0; 
+
+      // float temp[10];
+      // int heartRate[10];
+
+      while(calIndx < 10) {
+        if(one_sec_tick) {
+          Window1s_t win;
+          // PPG_PollOnce();
+          BuildWindow_1s(&win);
+
+          one_sec_tick = 0;
+          for(int j = 0; j< 200; j++) {
+            sum_eda += win.eda.samples[j];
+          }
+          skinCond[calIndx] = sum_eda/200; // worng,change to average later 
+          // temp[calIndx] = win.temp.n;
+          // heartRate[calIndx] = 75; //PLACEHOLDER value until HR sensor is integrated.
+          calIndx++;
+        }
+      }
+
+        //Calculate averages
+        float skinCondSum = 0;
+        // float tempSum = 0;
+        // int heartRateSum = 0;
+        for(int i = 0; i < 10; i++) {
+          skinCondSum += skinCond[i];
+        }
+        userCalibratedData.skinCond = skinCondSum / 10;
+        printf("%f\n", userCalibratedData.skinCond);
+        HAL_Delay(100);
     }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+
+    // TEMP_Init_MAX31865();
+    // HAL_Delay(100);
+    // uint8_t cfg = TEMP_Read_Config();
+    // uint8_t fs  = TEMP_Read_FaultStatus();
+    // uint16_t rtd_raw = TEMP_Read_RTD_Raw();
+    // printf("MAX31865 CFG=0x%02X, FAULT=0x%02X, RTD_RAW=0x%04X (code15=%u, faultbit=%u)\r\n",
+    //       cfg, fs, rtd_raw,
+    //       (unsigned)(rtd_raw >> 1),
+    //       (unsigned)(rtd_raw & 1u));
+          
 		switch (app_state)
     {
       case APP_MONITOR:
         // stay here collecting data; jump to PRINT on each 1s tick
         if (one_sec_tick) {
           one_sec_tick = 0;
+          printf("Time: %d. Monitor state!!\r\n", seconds_counter);
           app_state = APP_PRINT;
         }
         break;
@@ -363,31 +458,43 @@ int main(void)
       case APP_PRINT:
       {
         // Build the combined 1s window from latest EDA half-buffer and TEMP ring snapshot
+        // PPG_PollOnce();
+
         Window1s_t win;
         BuildWindow_1s(&win);
 
         // Print both windows (EDA first, then TEMP)
+        printf("Time: %d. Predict state!!\r\n", seconds_counter);
         Print_EDA_Window(&win.eda);
-        Print_TEMP_Window(&win.temp);
+        // Print_TEMP_Window(&win.temp);
+        // Print_PPG_1s(&win.ppg);
 
-        // Store the data in a single entry, ready for the algorithm and linked list storage
+        // Call ML/prediction (stub)
+        // Predict(&win);
+        // results = predict();
+
         DataEntry currEntry;
-        currEntry.temp = win.temp.n;
-        currEntry.skinCond = win.eda.n;
-        currEntry.heartRate = 75; // PLACEHOLDER value until HR sensor is integrated.
+        // currEntry.temp = 0;
+        int sum = 0;
+        for(int i = 0; i < 200; i++) {
+          sum += win.eda.samples[i];
+        }
+        currEntry.skinCond = sum / 200;
+        // printf("%f", currEntry.skinCond);
+        // currEntry.heartRate = win.ppg.hr_x10; // PLACEHOLDER value until HR sensor is integrated.
 
-        // Call Prediction Algorithm
-        //Predict(&win);
         episodeCount = deterministicAlgorithm(currEntry, episodeState, episodeCount, userCalibratedData);
-        if (episodeCount >= 10 && !episodeState) {
+        // printf("%d\n", episodeCount);
+        if (episodeCount >= 5) {
             // Episode started
-            episodeState = true;
-            //printf("Episode started!\n");
+            episodeState = 1;
+            printf("Episode started!\n");
         } else if (episodeCount < 3 && episodeState) {
             // Episode ended
-            episodeState = false;
-            //printf("Episode ended!\n");
+            episodeState = 0;
+            printf("Episode ended!\n");
         }
+
 
         //Create a new node, then add it to the linked list
         DataNode* newNode = (DataNode*)malloc(sizeof(DataNode));
@@ -408,51 +515,53 @@ int main(void)
           DataNode_ManageMemory();
         }
 
+
         // advance time and go back to monitoring
         seconds_counter++;
-        app_state = APP_MONITOR;
+        app_state = (episodeState != prevEpState) ? APP_MOTOR: APP_MONITOR;
+        prevEpState = episodeState;
       } break;
 
-      //Initial calibration state, check the readings over a period of time to set normal values.
-      case APP_CALIBRATION:
+      case APP_MOTOR:
       {
-        int calIndx = 0;
-        float skinCond[10];
-        float temp[10];
-        int heartRate[10];
-
-        while(calIndx < 10) {
-          if(one_sec_tick) {
-            Window1s_t win;
-            BuildWindow_1s(&win);
-
-            one_sec_tick = 0;
-            skinCond[calIndx] = win.eda.n;
-            temp[calIndx] = win.temp.n;
-            heartRate[calIndx] = 75; //PLACEHOLDER value until HR sensor is integrated.
-            calIndx++;
-          }
+        //pwm enabale 
+        // printf("buzz\n");
+        if(app_state == episodeState){
+          HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);   // start PA8 PWM
+          PWM1_SetDuty(60.0f);
+          HAL_Delay(500);
+          HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
+        }else if(app_state != episodeState){
+          HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);   // start PA8 PWM
+          PWM1_SetDuty(60.0f);
+          HAL_Delay(1000);
+          HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
         }
-
-        //Calculate averages
-        float skinCondSum = 0;
-        float tempSum = 0;
-        int heartRateSum = 0;
-        for(int i = 0; i < 10; i++) {
-          skinCondSum += skinCond[i];
-          tempSum += temp[i];
-          heartRateSum += heartRate[i];
-        }
-        userCalibratedData.skinCond = skinCondSum / 10;
-        userCalibratedData.temp = tempSum / 10;
-        userCalibratedData.heartRate = heartRateSum / 10;
+        //pwm disable
         app_state = APP_MONITOR;
-        break;
       }
 
       default: app_state = APP_MONITOR; break;
     }
 
+    // if (rx_line_ready) {
+    //   // make a local copy (avoid using volatile buffer while print)
+    //   char cmd[RX_LINE_MAX];
+    //   uint16_t len = rx_len;
+    //   if (len >= RX_LINE_MAX) len = RX_LINE_MAX-1;
+    //   memcpy(cmd, rx_line, len);
+    //   cmd[len] = 0;
+
+    //   // reset RX line state
+    //   rx_len = 0;
+    //   rx_line_ready = 0;
+
+    //   if (strcmp(cmd, "GET_FILE") == 0) {
+    //     Send_EDA_1s_File_RAW_quick();
+    //   } else {
+    //     UART_SendText("ERR unknown_cmd\n");
+    //   }
+    // }
 
   }
   /* USER CODE END 3 */
@@ -560,25 +669,74 @@ static void ADC1_DoCalibration(void)
 #endif
 }
 
+// static void EDA_Start(void)
+// {
+//   ADC1_DoCalibration();
+//   HAL_ADC_Start_DMA(&hadc1, (uint32_t*)eda_buf, BUF_SAMPLES);  // circular, 400 half-words
+//   HAL_TIM_Base_Start(&htim6);                                  // 200 Hz TRGO
+// }
+
 static void EDA_Start(void)
 {
   ADC1_DoCalibration();
-  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)eda_buf, BUF_SAMPLES);  // circular, 400 half-words
-  HAL_TIM_Base_Start(&htim6);                                  // 200 Hz TRGO
+#if EDA_USE_DMA
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)eda_buf, BUF_SAMPLES); // 400 half-words
+#else
+  // Arm ADC to convert on TIM6 TRGO and raise EOC interrupt each conversion
+  HAL_ADC_Start_IT(&hadc1);
+#endif
+  HAL_TIM_Base_Start(&htim6);  // 200 Hz TRGO
 }
 
-// DMA HT/TC each represent a full 1s EDA window (200 samples)
+
+
+
+// // DMA HT/TC each represent a full 1s EDA window (200 samples)
+// void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc)
+// {
+//   if (hadc == &hadc1) { eda_win_ptr = &eda_buf[0]; }
+// }
+// void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
+// {
+//   if (hadc == &hadc1) { eda_win_ptr = &eda_buf[FS_EDA]; }
+// }
+
+
+// void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc){
+//   if (hadc == &hadc1) { eda_win_ptr = &eda_buf[0]; printf("[HT]\r\n"); }
+// }
+// void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc){
+//   if (hadc == &hadc1) { eda_win_ptr = &eda_buf[FS_EDA]; printf("[TC]\r\n"); }
+// }
+
+
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc)
 {
-  if (hadc == &hadc1) { eda_win_ptr = &eda_buf[0]; }
-}
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
-{
-  if (hadc == &hadc1) { eda_win_ptr = &eda_buf[FS_EDA]; }
+#if EDA_USE_DMA
+  if (hadc == &hadc1) eda_win_ptr = &eda_buf[0];
+#endif
 }
 
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
+{
+#if EDA_USE_DMA
+  if (hadc == &hadc1) eda_win_ptr = &eda_buf[FS_EDA];
+#else
+  if (hadc == &hadc1) {
+    // One sample ready after each TIM6 trigger
+    uint16_t v = (uint16_t)HAL_ADC_GetValue(&hadc1);
+    if (eda_i < FS_EDA) eda_soft[eda_i++] = v;
+    if (eda_i >= FS_EDA) {                // full 1-s window
+      eda_win_ptr = (const uint16_t*)eda_soft;  // hand to BuildWindow_1s()
+      eda_i = 0;
+    }
+  }
+#endif
+}
+
+
 /**************  TEMP (MAX31865 on SPI1)  *****************/
-// Use your CubeMX labels from gpio.h
+// Use CubeMX labels from gpio.h
 static inline void TEMP_CS_Low(void)  { HAL_GPIO_WritePin(TEMP_CS_GPIO_Port, TEMP_CS_Pin, GPIO_PIN_RESET); }
 static inline void TEMP_CS_High(void) { HAL_GPIO_WritePin(TEMP_CS_GPIO_Port, TEMP_CS_Pin, GPIO_PIN_SET); }
 
@@ -595,7 +753,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 // DRDY falling → read one RTD sample and push to ring
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-  if (GPIO_Pin == MAX_DRDY_Pin) {
+  if (GPIO_Pin == TEMP_DRDY_Pin) {
     uint16_t raw = TEMP_Read_RTD_Raw();
     temp_ring[temp_wi] = raw;
     temp_wi = (uint16_t)((temp_wi + 1) % TEMP_RING_N);
@@ -613,14 +771,14 @@ static void SPI1_Write1(uint8_t addr_write, uint8_t data)
   TEMP_CS_Low();
   HAL_SPI_Transmit(&hspi1, &addr_write, 1, 10);
   HAL_SPI_Transmit(&hspi1, &data,       1, 10);
-  TEMP_CS_High();
+  // TEMP_CS_High();
 }
 static void SPI1_ReadN(uint8_t addr_read, uint8_t *rx, uint16_t n)
 {
   TEMP_CS_Low();
   HAL_SPI_Transmit(&hspi1, &addr_read, 1, 10);
   HAL_SPI_Receive(&hspi1, rx, n, 10);
-  TEMP_CS_High();
+  // TEMP_CS_High();
 }
 
 // Config: VBIAS=1, AutoConv=1, 3-wire=0 (2/4-wire), FaultClr=1, 50Hz=1 -> 0xC3
@@ -664,18 +822,35 @@ static void BuildWindow_1s(Window1s_t *dst)
     dst->temp.raw[i] = temp_ring[(start + i) % TEMP_RING_N];
   }
   dst->temp.n = n;
+
+  //ppg
+  dst->ppg = latest_ppg;
 }
+
+// static void Print_EDA_Window(const EDA_1s_t *w)
+// {
+//   printf("EDA sec=%lu, N=%u, RAW=",
+//          (unsigned long)seconds_counter, (unsigned)w->n);
+//   for (uint16_t i = 0; i < w->n; ++i) {
+//     printf("%u", (unsigned)w->samples[i]);
+//     if (i + 1u < w->n) printf(",");
+//   }
+//   printf("\r\n");
+// }
 
 static void Print_EDA_Window(const EDA_1s_t *w)
 {
-  printf("EDA sec=%lu, N=%u, RAW=",
+  printf("EDA sec=%lu, N=%u, mV=",
          (unsigned long)seconds_counter, (unsigned)w->n);
+
   for (uint16_t i = 0; i < w->n; ++i) {
-    printf("%u", (unsigned)w->samples[i]);
+    uint32_t mv = EDA_CodeTo_mV(w->samples[i]);
+    printf("%lu", (unsigned long)mv);
     if (i + 1u < w->n) printf(",");
   }
   printf("\r\n");
 }
+
 
 static void Print_TEMP_Window(const TEMP_1s_t *w)
 {
@@ -747,6 +922,468 @@ static void PWM1_SetFrequency(uint32_t hz)
     PWM1_SetDuty(duty);                                   // re-apply duty
 }
 
+static inline uint32_t EDA_CodeTo_mV(uint16_t code)
+{
+  return  (uint32_t)code * 3300 / 4095;
+}
+
+static void UART_StartRx_IT(void) {
+  HAL_UART_Receive_IT(&hcom_uart[COM1], &uart_rx_byte, 1);
+}
+
+// //uart part
+// void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+// {
+//   if (huart == &hcom_uart[COM1]) {
+//     uint8_t b = uart_rx_byte;
+
+//     if (!rx_line_ready) {
+//       if (b == '\n') {
+//         rx_line[ (rx_len < RX_LINE_MAX) ? rx_len : (RX_LINE_MAX-1) ] = 0;
+//         rx_line_ready = 1;
+//       } else if (b != '\r') { // ignore CR
+//         if (rx_len < RX_LINE_MAX-1) {
+//           rx_line[rx_len++] = b;
+//         } else {
+//           // overflow: reset line
+//           rx_len = 0;
+//         }
+//       }
+//     }
+//     // re-arm for next byte
+//     HAL_UART_Receive_IT(&hcom_uart[COM1], &uart_rx_byte, 1);
+//   }
+// }
+
+
+// void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+// {
+//   if (huart == &hcom_uart[COM1]) {      // use COM1, not huart1
+//     uint8_t b = uart_rx_byte;
+
+//     // simple line-based parser: collect until \r or \n
+//     if (b == '\r' || b == '\n') {
+//       // end of command
+//       uart_rx_buffer[uart_rx_index] = '\0';   // null-terminate
+//       uart_cmd_ready = 1;                    // signal main loop
+//       uart_rx_index = 0;                     // reset for next command
+//     } else {
+//       if (uart_rx_index < UART_RX_BUFFER_SIZE - 1) {
+//         uart_rx_buffer[uart_rx_index++] = b;
+//       } else {
+//         // overflow: reset line
+//         uart_rx_index = 0;
+//       }
+//     }
+
+//     // re-arm for next byte
+//     HAL_UART_Receive_IT(&hcom_uart[COM1], &uart_rx_byte, 1);
+//   }
+// }
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == hcom_uart[COM1].Instance) {
+    uint8_t b = uart_rx_byte;
+
+    // DEBUG: echo every byte so we know ISR fires
+    HAL_UART_Transmit(&hcom_uart[COM1], &b, 1, 100);
+
+    if (b == '\r' || b == '\n') {
+      uart_rx_buffer[uart_rx_index] = '\0';
+      uart_cmd_ready = 1;
+      uart_rx_index = 0;
+    } else {
+      if (uart_rx_index < UART_RX_BUFFER_SIZE - 1) {
+        uart_rx_buffer[uart_rx_index++] = b;
+      } else {
+        uart_rx_index = 0; // overflow reset
+      }
+    }
+
+    HAL_UART_Receive_IT(&hcom_uart[COM1], &uart_rx_byte, 1);
+  }
+}
+
+
+
+
+// static void Send_EDA_1s_File_RAW_quick(void)
+// {
+//   // Build latest 1-second window
+//   Window1s_t win;
+//   BuildWindow_1s(&win);
+
+//   // Stream just the CSV lines (millivolts), no headers/trailers
+//   for (uint16_t i = 0; i < win.eda.n; ++i) {
+//     uint32_t mv = EDA_CodeTo_mV(win.eda.samples[i]);   // you already have EDA_CodeTo_mV()
+//     char line[16];
+//     int n = snprintf(line, sizeof(line), "%lu\n", (unsigned long)mv);
+//     HAL_UART_Transmit(&hcom_uart[COM1], (uint8_t*)line, (uint16_t)n, 200);
+//   }
+
+//   // IMPORTANT: give his script time to hit its 5s timeout and close the file
+//   HAL_Delay(6000);  // 6 seconds
+// }
+
+// static void UART_SendText(const char *s)
+// {
+//   HAL_UART_Transmit(&hcom_uart[COM1], (uint8_t*)s, (uint16_t)strlen(s), 200);
+// }
+
+
+// -=-=-=-=-=-=- get download -=-=-=-=-=-=-=-=-=-=- 
+
+static void ProcessUARTCommand(void)
+{
+  // uart_rx_buffer already null-terminated by ISR
+  printf("Received command: %s\r\n", (char*)uart_rx_buffer);
+
+  // NOTE: command is case-sensitive right now:
+  // you must type GET_LINKED_LIST (all caps) in Tera Term
+  if (strstr((char*)uart_rx_buffer, "GET_LINKED_LIST") != NULL) {
+    SendLinkedListToApp();
+  } else {
+    printf("Unknown command received\r\n");
+  }
+}
+
+
+// Send linked list data to app in parseable format
+static void SendLinkedListToApp(void)
+{
+  if (total_nodes == 0) {
+    printf("No data available\r\n");
+    printf("END_OF_LIST\r\n");
+    return;
+  }
+  
+  printf("Sending %lu linked list entries...\r\n", (unsigned long)total_nodes);
+  
+  DataNode* current = dataHead;
+  uint32_t sent_count = 0;
+  
+  while (current != NULL) {
+    // Send data in format expected by SerialConnection.py parser
+    // Format: timestamp:SECONDS,temp:VALUE,hr:VALUE,sc:VALUE,status:Normal
+    printf("timestamp:%f,sc:%.2f,status:%d\r\n",
+           current->id / 100.0,
+           //current->currEntry.temp,
+           //current->currEntry.heartRate,
+           current->currEntry.skinCond,
+           current->nodeEpisodeState ? 1 : 0);
+    
+    current = current->nextEntry;
+    sent_count++;
+    
+    // Small delay to prevent overwhelming the UART
+    HAL_Delay(10);
+  }
+  
+  printf("END_OF_LIST\r\n");
+  printf("Sent %lu entries successfully\r\n", (unsigned long)sent_count);
+}
+
+
+// temp stuff
+
+static void TEMP_DebugPoll(void)
+{
+  static uint32_t last_ms = 0;
+  uint32_t now = HAL_GetTick();
+  if (now - last_ms >= 500) {   // every 500 ms
+    last_ms = now;
+    uint16_t raw = TEMP_Read_RTD_Raw();
+    printf("TEMP POLL raw=0x%04X code15=%u fault=%u\r\n",
+           (unsigned)raw,
+           (unsigned)(raw >> 1),
+           (unsigned)(raw & 1u));
+  }
+}
+
+
+static uint8_t TEMP_Read_Config(void)
+{
+    uint8_t cfg = 0;
+    SPI1_ReadN(MAX31865_REG_CFG_READ, &cfg, 1);
+    return cfg;
+}
+
+static uint8_t TEMP_Read_FaultStatus(void)
+{
+    uint8_t fs = 0;
+    // Fault status register is at 0x07 (read)
+    SPI1_ReadN(0x07u, &fs, 1);
+    return fs;
+}
+
+// --------------------------PPG ----------------------
+// static HAL_StatusTypeDef Hub_WriteCmd(uint8_t family, uint8_t index,
+//                                       const uint8_t *payload, uint8_t plen)
+// {
+//   uint8_t tx[3 + 8];     // we only ever send <=5 data bytes here
+//   if (plen > 8) return HAL_ERROR;
+
+//   tx[0] = HUB_CMD_PREFIX;
+//   tx[1] = family;
+//   tx[2] = index;
+//   if (plen && payload) {
+//     memcpy(&tx[3], payload, plen);
+//   }
+
+//   HAL_StatusTypeDef st =
+//       HAL_I2C_Master_Transmit(&hi2c1, MAX32664_I2C_ADDR, tx, 3 + plen, 100);
+//   if (st != HAL_OK) return st;
+
+//   // Read back 2-byte status header (0xAB, status)
+//   uint8_t rsp[2];
+//   st = HAL_I2C_Master_Receive(&hi2c1, MAX32664_I2C_ADDR, rsp, 2, 100);
+//   if (st != HAL_OK) return st;
+//   if (rsp[0] != HUB_RSP_PREFIX || rsp[1] != 0x00) return HAL_ERROR;  // non-zero = error
+//   return HAL_OK;
+// }
+
+// static HAL_StatusTypeDef Hub_ReadCmd(uint8_t family, uint8_t index,
+//                                      uint8_t *rx, uint8_t rlen)
+// {
+//   uint8_t tx[3] = { HUB_CMD_PREFIX, family, index };
+
+//   HAL_StatusTypeDef st =
+//       HAL_I2C_Master_Transmit(&hi2c1, MAX32664_I2C_ADDR, tx, 3, 100);
+//   if (st != HAL_OK) return st;
+
+//   // Response header + payload
+//   uint8_t buf[2 + 32];          // enough for small payloads
+//   if (rlen > 32) return HAL_ERROR;
+
+//   st = HAL_I2C_Master_Receive(&hi2c1, MAX32664_I2C_ADDR, buf, 2 + rlen, 100);
+//   if (st != HAL_OK) return st;
+//   if (buf[0] != HUB_RSP_PREFIX || buf[1] != 0x00) return HAL_ERROR;
+
+//   memcpy(rx, &buf[2], rlen);
+//   return HAL_OK;
+// }
+
+
+static HAL_StatusTypeDef Hub_WriteCmd(uint8_t family, uint8_t index,
+                                      const uint8_t *payload, uint8_t plen)
+{
+  uint8_t tx[2 + 8];
+  if (plen > 8) return HAL_ERROR;
+
+  tx[0] = family;
+  tx[1] = index;
+  if (plen && payload) memcpy(&tx[2], payload, plen);
+
+  HAL_StatusTypeDef st =
+      HAL_I2C_Master_Transmit(&hi2c1, MAX32664_I2C_ADDR,
+                              tx, 2 + plen, 100);
+  if (st != HAL_OK) return st;
+
+  // Wait >60 µs
+  HAL_Delay(1);
+
+  uint8_t status = 0xFF;
+  st = HAL_I2C_Master_Receive(&hi2c1, MAX32664_I2C_ADDR,
+                              &status, 1, 100);
+  if (st != HAL_OK) return st;
+
+  return (status == 0x00) ? HAL_OK : HAL_ERROR;
+}
+
+static HAL_StatusTypeDef Hub_ReadCmd(uint8_t family, uint8_t index,
+                                     uint8_t *rx, uint8_t rlen)
+{
+  uint8_t tx[2] = { family, index };
+
+  HAL_StatusTypeDef st =
+      HAL_I2C_Master_Transmit(&hi2c1, MAX32664_I2C_ADDR, tx, 2, 100);
+  if (st != HAL_OK) return st;
+
+  HAL_Delay(1);
+
+  uint8_t buf[1 + 32];
+  if (rlen > 32) return HAL_ERROR;
+
+  st = HAL_I2C_Master_Receive(&hi2c1, MAX32664_I2C_ADDR,
+                              buf, 1 + rlen, 100);
+  if (st != HAL_OK) return st;
+
+  uint8_t status = buf[0];
+  if (status != 0x00) return HAL_ERROR;
+
+  memcpy(rx, &buf[1], rlen);
+  return HAL_OK;
+}
+
+
+
+
+static void PPG_ResetToAppMode(void)
+{
+  // MFIO high -> application mode (per Maxim guides)
+  HAL_GPIO_WritePin(PPG_MFIO_PORT, PPG_MFIO_PIN, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(PPG_RST_PORT,  PPG_RST_PIN,  GPIO_PIN_RESET);
+  HAL_Delay(10);
+  HAL_GPIO_WritePin(PPG_RST_PORT,  PPG_RST_PIN,  GPIO_PIN_SET);
+  HAL_Delay(200);   // allow hub to boot
+}
+
+static void PPG_Init(void)
+{
+  PPG_ResetToAppMode();
+
+  // (Optional but nice) ensure we’re in application mode, not bootloader:
+  uint8_t mode;
+  if (Hub_ReadCmd(HUB_FAMILY_DEVICE_MODE, 0x00, &mode, 1) == HAL_OK) {
+    // mode == 0x00 => application
+  }
+
+  // 1) Output mode: algorithm data only
+  //    family 0x10, index 0x00, data=0x02  (Algorithm Data) 
+  uint8_t out_mode = 0x02;
+  Hub_WriteCmd(HUB_FAMILY_OUTPUT_MODE, 0x00, &out_mode, 1);
+  HAL_Delay(20);
+
+  // 2) Enable MAX30101 sensor (family 0x44, index 0x03, data=0x01) 
+  uint8_t on = 0x01;
+  Hub_WriteCmd(HUB_FAMILY_SENSOR, 0x03, &on, 1);
+  HAL_Delay(20);
+
+  // 3) Enable MaximFast algorithm mode 1 (HR+SpO2) (family 0x52, index 0x02) 
+  uint8_t algo_mode = 0x01;  // Mode 1
+  Hub_WriteCmd(HUB_FAMILY_ALGO_MODE, 0x02, &algo_mode, 1);
+  HAL_Delay(120);            // algorithm start-up per table
+}
+
+
+static void PPG_PollOnce(void)
+{
+  uint8_t count = 0;
+  if (Hub_ReadCmd(HUB_FAMILY_FIFO, 0x00, &count, 1) != HAL_OK) {
+    return;
+  }
+  if (count == 0) {
+    latest_ppg.valid = 0;
+    return;
+  }
+
+  uint8_t sample[6];
+  if (Hub_ReadCmd(HUB_FAMILY_FIFO, 0x01, sample, sizeof(sample)) != HAL_OK) {
+    latest_ppg.valid = 0;
+    return;
+  }
+
+  uint16_t hr_raw   = ((uint16_t)sample[0] << 8) | sample[1];
+  uint8_t  conf     = sample[2];
+  // uint16_t spo2_raw = ((uint16_t)sample[3] << 8) | sample[4];
+  // uint8_t  status   = sample[5];
+
+  latest_ppg.hr_x10     = hr_raw;   // assume Q1 with 1 decimal place
+  latest_ppg.confidence = conf;
+  latest_ppg.valid      = 1;
+}
+
+static void Print_PPG_1s(const PPG_1s_t *p)
+{
+  printf("PPG sec=%lu, ", (unsigned long)seconds_counter);
+
+  if (!p->valid) {
+    printf("HR=NA\r\n");
+    return;
+  }
+
+  uint16_t bpm_int  = p->hr_x10 / 10u;
+  uint16_t bpm_frac = p->hr_x10 % 10u;
+
+  printf("HR=%u.%u bpm, conf=%u\r\n",
+         (unsigned)bpm_int,
+         (unsigned)bpm_frac,
+         (unsigned)p->confidence);
+}
+
+
+
+
+// -=-=-=-=-=-=- linked list helper -=-=-=- 
+// Remove the oldest 'count' nodes from the linked list
+static void DataNode_RemoveOldest(uint32_t count)
+{
+  for (uint32_t i = 0; i < count && dataHead != NULL; i++) {
+    DataNode* nodeToRemove = dataHead;
+    dataHead = dataHead->nextEntry;
+    
+    // If we removed the last node, update tail
+    if (dataHead == NULL) {
+      dataTail = NULL;
+    }
+    
+    free(nodeToRemove);
+    total_nodes--;
+  }
+}
+
+// Manage memory by removing old data when limits are reached
+static void DataNode_ManageMemory(void)
+{
+  // Only start managing memory after we reach 10 hours of data
+  if (total_nodes >= MAX_NODES) {
+    
+    // Remove the oldest 30 minutes of data to make room
+    printf("Memory limit reached (%lu nodes): Removing %lu oldest nodes\r\n", 
+           (unsigned long)total_nodes, (unsigned long)NODES_TO_REMOVE);
+    
+    DataNode_RemoveOldest(NODES_TO_REMOVE);
+    
+    printf("Memory cleanup complete: %lu nodes remaining\r\n", 
+           (unsigned long)total_nodes);
+  }
+  
+  // Emergency cleanup if we somehow exceed maximum by a large margin
+  if (total_nodes > (MAX_NODES + 100)) {
+    uint32_t excess = total_nodes - MAX_NODES;
+    printf("Emergency cleanup: Removing %lu excess nodes\r\n", (unsigned long)excess);
+    DataNode_RemoveOldest(excess);
+  }
+}
+// -=-=-=-== linked list helper end -=-=-=-=-=-=-=-=- 
+
+void calibration(){
+  int calIndx = 0;
+      float skinCond[10];
+      int sum_eda = 0; 
+
+      // float temp[10];
+      // int heartRate[10];
+
+      while(calIndx < 10) {
+        if(one_sec_tick) {
+          Window1s_t win;
+          // PPG_PollOnce();
+          BuildWindow_1s(&win);
+
+          one_sec_tick = 0;
+          for(int j = 0; j< 200; j++) {
+            sum_eda += win.eda.samples[j];
+          }
+          skinCond[calIndx] = sum_eda/200; // worng,change to average later 
+          // temp[calIndx] = win.temp.n;
+          // heartRate[calIndx] = 75; //PLACEHOLDER value until HR sensor is integrated.
+          calIndx++;
+        }
+      }
+
+        //Calculate averages
+        float skinCondSum = 0;
+        // float tempSum = 0;
+        // int heartRateSum = 0;
+        for(int i = 0; i < 10; i++) {
+          skinCondSum += skinCond[i];
+        }
+        userCalibratedData.skinCond = skinCondSum / 10;
+        printf("%f\n", userCalibratedData.skinCond);
+        HAL_Delay(100);
+}
 
 
 /* USER CODE END 4 */
@@ -794,221 +1431,3 @@ void assert_failed(uint8_t *file, uint32_t line)
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
-
-
-// Remove the oldest 'count' nodes from the linked list
-static void DataNode_RemoveOldest(uint32_t count)
-{
-  for (uint32_t i = 0; i < count && dataHead != NULL; i++) {
-    DataNode* nodeToRemove = dataHead;
-    dataHead = dataHead->nextEntry;
-    
-    // If we removed the last node, update tail
-    if (dataHead == NULL) {
-      dataTail = NULL;
-    }
-    
-    free(nodeToRemove);
-    total_nodes--;
-  }
-}
-
-// Manage memory by removing old data when limits are reached
-static void DataNode_ManageMemory(void)
-{
-  // Only start managing memory after we reach 10 hours of data
-  if (total_nodes >= MAX_NODES) {
-    
-    // Remove the oldest 30 minutes of data to make room
-    printf("Memory limit reached (%lu nodes): Removing %lu oldest nodes\r\n", 
-           (unsigned long)total_nodes, (unsigned long)NODES_TO_REMOVE);
-    
-    DataNode_RemoveOldest(NODES_TO_REMOVE);
-    
-    printf("Memory cleanup complete: %lu nodes remaining\r\n", 
-           (unsigned long)total_nodes);
-  }
-  
-  // Emergency cleanup if we somehow exceed maximum by a large margin
-  if (total_nodes > (MAX_NODES + 100)) {
-    uint32_t excess = total_nodes - MAX_NODES;
-    printf("Emergency cleanup: Removing %lu excess nodes\r\n", (unsigned long)excess);
-    DataNode_RemoveOldest(excess);
-  }
-}
-
-// Start UART receive for commands
-static void StartUARTReceive(void)
-{
-  uart_rx_index = 0;
-  HAL_UART_Receive_IT(&huart1, &uart_rx_buffer[uart_rx_index], 1);
-}
-
-// Process received UART commands from app
-static void ProcessUARTCommand(void)
-{
-  // Ensure we don't write beyond buffer bounds
-  if (uart_rx_index < UART_RX_BUFFER_SIZE) {
-    uart_rx_buffer[uart_rx_index] = '\0';
-  } else {
-    uart_rx_buffer[UART_RX_BUFFER_SIZE - 1] = '\0';
-    uart_rx_index = UART_RX_BUFFER_SIZE - 1; // Clamp index
-  }
-  
-  printf("Received command: %s\r\n", (char*)uart_rx_buffer);
-  
-  // Clear buffer after processing to prevent contamination
-  memset(uart_rx_buffer, 0, UART_RX_BUFFER_SIZE);
-  
-
-  // Check for GET_LINKED_LIST command
-  if (strstr((char*)uart_rx_buffer, "GET_LINKED_LIST") != NULL) {
-    printf("Processing GET_LINKED_LIST command...\r\n");
-    SendLinkedListToApp();
-  }
-  else if (strstr((char*)uart_rx_buffer, "GET_FILE") != NULL) {
-    printf("GET_FILE command received - streaming current data...\r\n");
-    // For GET_FILE, just continue normal operation (data will stream via printf)
-  }
-  else {
-    printf("Unknown command received\r\n");
-  }
-  
-  // Restart UART receive
-  StartUARTReceive();
-}
-
-// Send linked list data to app in parseable format
-static void SendLinkedListToApp(void)
-{
-  if (total_nodes == 0) {
-    printf("No data available\r\n");
-    printf("END_OF_LIST\r\n");
-    return;
-  }
-  
-  printf("Sending %lu linked list entries...\r\n", (unsigned long)total_nodes);
-  
-  DataNode* current = dataHead;
-  uint32_t sent_count = 0;
-  
-  while (current != NULL) {
-    // Send data in format expected by SerialConnection.py parser
-    // Format: timestamp:SECONDS,temp:VALUE,hr:VALUE,sc:VALUE,status:Normal
-    printf("timestamp:%d,temp:%.2f,hr:%.2f,sc:%.2f,status:Normal\r\n",
-           current->id,
-           current->currEntry.temp,
-           current->currEntry.heartRate,
-           current->currEntry.skinCond,
-           current->nodeEpisodeState ? "Episode" : "Normal");
-    
-    current = current->nextEntry;
-    sent_count++;
-    
-    // Small delay to prevent overwhelming the UART
-    HAL_Delay(100);
-  }
-  
-  printf("END_OF_LIST\r\n");
-  printf("Sent %lu entries successfully\r\n", (unsigned long)sent_count);
-}
-
-// UART receive complete callback
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
-{
-  if (huart->Instance == USART1) {
-    // Check for end of command (newline or carriage return)
-    if (uart_rx_buffer[uart_rx_index] == '\n' || uart_rx_buffer[uart_rx_index] == '\r') {
-      uart_command_ready = 1;  // Command is ready to process
-    } else {
-      // Continue receiving if buffer has space
-      uart_rx_index++;
-      if (uart_rx_index < UART_RX_BUFFER_SIZE - 1) {
-        HAL_UART_Receive_IT(&huart1, &uart_rx_buffer[uart_rx_index], 1);
-      } else {
-        // Buffer full, process what we have
-        uart_command_ready = 1;
-      }
-    }
-  }
-}
-
-// Sample test image data (small 50x30 pixels for demonstration)
-// You can replace this with your actual image data
-static const uint16_t test_image_data[50 * 30] = {
-  // This creates a simple pattern - replace with your actual image
-  // Format: RGB565 (16-bit color values)
-  0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800,  // Red line
-  0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800,
-  0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800,
-  0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800,
-  0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800, 0xF800,
-  // Initialize remaining elements to 0 (black) - you'd fill with actual image data
-};
-
-// Define the test image structure
-static const Picture test_image = {
-  50,     // width
-  30,     // height
-  2       // bytes_per_pixel (RGB565 format)
-  // pixel_data will point to test_image_data when used
-};
-
-// Static flag to track LCD initialization
-static uint8_t lcd_initialized = 0;
-
-// Redraw function to redraw the display.
-static void RedrawDisplay(void)
-{
-  // Initialize LCD if not already done
-  if (!lcd_initialized) {
-    LCD_Setup();  // Initialize the LCD hardware
-    LCD_Clear(BLACK);  // Clear screen with black background
-    lcd_initialized = 1;
-    printf("LCD Initialized\r\n");
-  }
-
-  // Clear the display
-  LCD_Clear(BLACK);
-
-  // Draw a border around the screen
-  LCD_DrawRectangle(0, 0, LCD_W-1, LCD_H-1, WHITE);
-
-  // Draw a title bar
-  LCD_DrawFillRectangle(0, 0, LCD_W-1, 30, BLUE);
-  LCD_DrawString(10, 8, WHITE, BLUE, "CoolWrist Display", 16, 0);
-
-  // Draw some status information
-  LCD_DrawString(10, 50, WHITE, BLACK, "Health Monitor Active", 12, 0);
-  LCD_DrawString(10, 70, GREEN, BLACK, "Status: Running", 12, 0);
-
-  // Draw a simple heart rate indicator (example)
-  LCD_DrawFillRectangle(10, 100, 60, 130, RED);
-  LCD_DrawString(15, 110, WHITE, RED, "HR", 12, 0);
-  LCD_DrawString(80, 110, RED, BLACK, "72 BPM", 12, 0);
-
-  // Draw a temperature indicator
-  LCD_DrawFillRectangle(10, 150, 60, 180, YELLOW);
-  LCD_DrawString(15, 160, BLACK, YELLOW, "TEMP", 12, 0);
-  LCD_DrawString(80, 160, YELLOW, BLACK, "36.5C", 12, 0);
-
-  // Draw a sample graph area
-  LCD_DrawRectangle(10, 200, LCD_W-10, 280, GREEN);
-  LCD_DrawString(15, 205, GREEN, BLACK, "EDA Signal", 12, 0);
-  
-  // Draw a simple zigzag pattern to simulate a waveform
-  for (int x = 15; x < LCD_W-15; x += 10) {
-    int y1 = 240 + ((x % 20) ? 10 : -10);  // Simple zigzag
-    int y2 = 240 + (((x + 10) % 20) ? 10 : -10);
-    LCD_DrawLine(x, y1, x + 10, y2, GREEN);
-  }
-
-  // Draw the test image (uncomment when you have actual image data)
-  // LCD_DrawPicture(50, 300, &test_image);
-
-  // Draw current time/date area
-  LCD_DrawString(10, LCD_H-40, CYAN, BLACK, "Time: 12:34:56", 12, 0);
-  LCD_DrawString(10, LCD_H-25, CYAN, BLACK, "Date: Nov 13, 2025", 12, 0);
-
-  printf("Display redrawn\r\n");
-}
